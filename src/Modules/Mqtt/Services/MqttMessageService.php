@@ -10,15 +10,15 @@ class MqttMessageService
 
     /**
      * @param array $data
-     * @return bool
+     * @return MqttMessage
      */
-    public function saveMessage(array $data): bool
+    public function saveMessage(array $data): MqttMessage
     {
         $model = new MqttMessage();
 
         $model->setAttributes($data, false);
         $model->save(false);
 
-        return true;
+        return $model;
     }
 }

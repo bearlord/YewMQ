@@ -3,12 +3,8 @@
 namespace App\Modules\Mqtt\Controllers;
 
 use App\Modules\Mqtt\Services\MqttClientService;
-use App\Modules\Mqtt\Services\MqttMessageService;
-use App\Modules\Mqtt\Services\MqttOfflineMessageService;
 use App\Modules\Mqtt\Services\MqttPublishService;
-use App\Modules\Mqtt\Services\MqttRetainedMessageService;
 use App\Modules\Mqtt\Services\MqttSubscriptionService;
-use Carbon\Carbon;
 use Yew\Core\Plugins\Logger\GetLogger;
 use Yew\Coroutine\Server\Server;
 use Yew\Framework\Controller;
@@ -102,10 +98,14 @@ class MqttWebsocketController extends Controller
         // Persist or update the client record, getting back its primary key.
         $clientPKId = (new MqttClientService())->saveOrUpdateMqttClient($clientId, $saveData);
 
-        // Register session state: map fd -> uid and clientId -> uid / session_start.
+        // Register session state: map fd -> uid and clientId
         $this->setFdSession($fd, 'uid', $clientPKId);
-        $this->setClientSession($clientId, 'uid', $clientPKId);
-        $this->setClientSession($clientId, 'session_start', $sessionStart);
+
+        // Register session state: map clientId -> uid / session_start.
+        $this->setClientSessionMulti($clientId, [
+            'uid' => $clientPKId,
+            'session_start' => $sessionStart
+        ]);
 
         // Bind the connection fd to the uid for Topic/Uid plugin routing.
         $this->bindUid($fd, $clientPKId);
@@ -146,9 +146,6 @@ class MqttWebsocketController extends Controller
         $this->autoBoostSend($fd, $disConnectMessage->getContents());
 
         // Remove the session state held for this connection and client.
-        Server::clearFdSession($fd);
-        Server::clearClientSession($clientId);
-
         $this->clearFdSession($fd);
         $this->clearClientSession($clientId);
     }
@@ -280,6 +277,19 @@ class MqttWebsocketController extends Controller
 
     /**
      * @RequestMapping("publish")
+     *
+     * Handle a client PUBLISH request (an inbound message from a client).
+     *
+     * Flow:
+     *  1. Reject the request when the topic or payload is missing.
+     *  2. Persist (and forward to subscribers) the message via the business layer.
+     *  3. Acknowledge the publisher per the QoS level:
+     *       - QoS 0: no acknowledgement.
+     *       - QoS 1: reply with PUBACK.
+     *       - QoS 2: reply with PUBREC (the publisher will then send PUBREL,
+     *         which is answered by PUBCOMP in actionPubrel).
+     *
+     * @return void
      */
     public function actionPublish(): void
     {
@@ -303,7 +313,17 @@ class MqttWebsocketController extends Controller
             return;
         }
 
-        (new MqttPublishService())->publishProcess(
+        // Packet identifier used for QoS 1 / QoS 2 acknowledgement.
+        $messageId = $clientData["data"]['message_id'] ?? null;
+
+        // A QoS 1/2 PUBLISH must carry a packet identifier; reject it otherwise.
+        if ($qos > 0 && empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        $mqttPublishService = new MqttPublishService();
+        $mqttPublishService->publishProcess(
             $protocolLevel,
             $clientId,
             $topic,
@@ -311,13 +331,162 @@ class MqttWebsocketController extends Controller
             $qos,
             $retain
         );
+
+        // 3. Acknowledge the publisher according to the QoS level (delegated
+        //    to the publish service, mirroring publishProcess).
+        if ($qos == 1) {
+            // QoS 1: a single PUBACK completes the delivery to the broker.
+            $mqttPublishService->pubAckProcess($fd, $protocolLevel, $messageId);
+        } elseif ($qos == 2) {
+            // QoS 2: PUBREC is the broker's acknowledgement; the publisher
+            // will respond with PUBREL, which we answer with PUBCOMP.
+            $mqttPublishService->pubRecProcess($fd, $protocolLevel, $messageId);
+        }
+    }
+
+    /**
+     * @RequestMapping("pubrec")
+     *
+     * Handle a subscriber PUBREC request (the outbound QoS 2 flow).
+     *
+     * When the broker delivers a QoS 2 message to a subscriber it sends
+     * PUBLISH; the subscriber replies with PUBREC. The broker then responds
+     * with a PUBREL carrying the same packet identifier, and the subscriber
+     * completes the handshake with PUBCOMP (handled in actionPubcomp).
+     *
+     * @return void
+     */
+    public function actionPubrec(): void
+    {
+        // Connection file descriptor and the decoded client payload.
+        $fd = $this->clientData->getFd();
+        $clientData = $this->clientData->getData();
+
+        // MQTT protocol version and client identifier (subscriber) carried in the payload.
+        $protocolLevel = $clientData['protocol_level'];
+        $clientId = $clientData['client_id'];
+
+        // Packet identifier that correlates this PUBREC with the earlier PUBLISH.
+        $messageId = $clientData['data']['message_id'] ?? null;
+
+        // A PUBREC without a packet identifier is malformed; close the connection.
+        if (empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        $mqttPublishService = new MqttPublishService();
+
+        // Advance the outbound ack record to the PUBREC stage (stage 2).
+        $mqttPublishService->markPubrecProcess($clientId, $messageId);
+
+        // Reply with a PUBREL packet using the same packet identifier so the
+        // subscriber can complete (and free) its QoS 2 in-flight state.
+        $mqttPublishService->pubRelProcess($fd, $protocolLevel, $messageId);
     }
 
     /**
      * @RequestMapping("pubrel")
+     *
+     * Handle a client PUBREL request (the third step of the MQTT QoS 2 flow).
+     *
+     * In QoS 2 the publisher sends PUBLISH -> PUBREC -> PUBREL; the broker
+     * acknowledges the PUBREL with a PUBCOMP packet carrying the same packet
+     * identifier, completing the exactly-once delivery handshake.
+     *
+     * @return void
      */
-    public function actionPubrel()
+    public function actionPubrel(): void
     {
+        // Connection file descriptor and the decoded client payload.
+        $fd = $this->clientData->getFd();
+        $clientData = $this->clientData->getData();
 
+        // MQTT protocol version carried in the payload.
+        $protocolLevel = $clientData['protocol_level'];
+
+        // Packet identifier that correlates this PUBREL with the earlier PUBLISH/PUBREC.
+        $messageId = $clientData['data']['message_id'] ?? null;
+
+        // A PUBREL without a packet identifier is malformed; close the connection.
+        if (empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        // Reply with a PUBCOMP packet using the same packet identifier so the
+        // publisher can complete (and free) its QoS 2 in-flight state.
+        (new MqttPublishService())->pubCompProcess($fd, $protocolLevel, $messageId);
+    }
+
+    /**
+     * @RequestMapping("pubcomp")
+     *
+     * Handle a subscriber PUBCOMP request (the terminal step of the outbound
+     * QoS 2 flow, where the broker is the publisher).
+     *
+     * The broker previously sent PUBLISH -> received PUBREC (answered with
+     * PUBREL). The subscriber now sends PUBCOMP to confirm receipt. PUBCOMP is
+     * the final packet, so the broker sends no reply; it only finalizes the
+     * in-flight acknowledgement record (stage -> completed) via the publish
+     * service.
+     *
+     * @return void
+     */
+    public function actionPubcomp(): void
+    {
+        // Connection file descriptor and the decoded client payload.
+        $fd = $this->clientData->getFd();
+        $clientData = $this->clientData->getData();
+
+        // Client identifier (subscriber) carried in the payload.
+        $clientId = $clientData['client_id'];
+
+        // Packet identifier that correlates this PUBCOMP with the earlier PUBLISH/PUBREL.
+        $messageId = $clientData['data']['message_id'] ?? null;
+
+        // A PUBCOMP without a packet identifier is malformed; close the connection.
+        if (empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        // PUBCOMP is terminal: finalize the in-flight ack record (no reply sent).
+        (new MqttPublishService())->completeAckProcess($clientId, $messageId);
+    }
+
+    /**
+     * @RequestMapping("puback")
+     *
+     * Handle a subscriber PUBACK request (the terminal step of the outbound
+     * QoS 1 flow, where the broker is the publisher).
+     *
+     * The broker previously sent a QoS 1 PUBLISH to the subscriber, which now
+     * replies with PUBACK to confirm receipt. PUBACK is the final packet, so
+     * the broker sends no reply; it only finalizes the in-flight acknowledgement
+     * record (stage -> completed) via the publish service.
+     *
+     * @return void
+     */
+    public function actionPuback(): void
+    {
+        // Connection file descriptor and the decoded client payload.
+        $fd = $this->clientData->getFd();
+        $clientData = $this->clientData->getData();
+
+        // Client identifier (subscriber) carried in the payload.
+        $clientId = $clientData['client_id'];
+
+        // Packet identifier that correlates this PUBACK with the earlier PUBLISH.
+        $messageId = $clientData['data']['message_id'] ?? null;
+
+        // A PUBACK without a packet identifier is malformed; close the connection.
+        if (empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        // PUBACK is terminal: finalize the in-flight ack record (no reply sent).
+        (new MqttPublishService())->completeAckProcess($clientId, $messageId);
     }
 }
