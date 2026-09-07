@@ -1,8 +1,7 @@
-﻿<?php
+<?php
 
 /**
  * Yew framework
- *
  * @author Bearlord <565364226@qq.com>
  */
 
@@ -18,7 +17,6 @@ use Yew\Yii\Yii;
 
 /**
  * Class StreamPack
- *
  * @package Yew\Plugins\Pack\PackTool
  */
 class JsonRpcPack extends AbstractPack

@@ -8,9 +8,8 @@ use App\Models\Extension\MqttOfflineMessage;
 class MqttOfflineMessageService
 {
     /**
-     * Persist an offline (buffered) message for later delivery.
-     *
-     * @param array<string, mixed> $data Message attributes (client_id, topic, message, qos, retain).
+     * @param array $data
+     * @return bool
      */
     public function saveOfflineMessage(array $data): bool
     {
@@ -22,9 +21,8 @@ class MqttOfflineMessageService
     }
 
     /**
-     * Delete all buffered offline messages for a client.
-     *
-     * @param string $clientId Client identifier.
+     * @param string $clientId
+     * @return bool
      */
     public function deleteOfflineMessageByClientId(string $clientId): bool
     {
@@ -33,6 +31,7 @@ class MqttOfflineMessageService
         ]);
 
         return true;
+
     }
 
 }

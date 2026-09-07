@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 
 use Yew\Framework\Db\Migration;
 
@@ -9,7 +9,6 @@ class m260727_075217_create_mqtt_will_property_table extends Migration
 {
     /**
      * {@inheritdoc}
-     *
      * @return bool
      */
     public function safeUp(): bool
@@ -49,7 +48,6 @@ class m260727_075217_create_mqtt_will_property_table extends Migration
 
     /**
      * {@inheritdoc}
-     *
      * @return bool
      */
     public function safeDown(): bool

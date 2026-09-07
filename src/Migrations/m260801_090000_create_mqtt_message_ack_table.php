@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 
 use Yew\Framework\Db\Migration;
 
@@ -18,7 +18,6 @@ class m260801_090000_create_mqtt_message_ack_table extends Migration
 {
     /**
      * {@inheritdoc}
-     *
      * @return bool
      */
     public function safeUp(): bool
@@ -71,7 +70,6 @@ class m260801_090000_create_mqtt_message_ack_table extends Migration
 
     /**
      * {@inheritdoc}
-     *
      * @return bool
      */
     public function safeDown(): bool

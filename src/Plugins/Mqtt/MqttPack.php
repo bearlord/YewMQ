@@ -1,7 +1,6 @@
-﻿<?php
+<?php
 /**
  * Yew framework
- *
  * @author tmtbe <896369042@qq.com>
  */
 
@@ -28,7 +27,6 @@ use Yew\Yew;
 
 /**
  * Class MqttPack
- *
  * @package App\Plugins\Mqtt
  */
 class MqttPack extends AbstractPack
@@ -66,7 +64,6 @@ class MqttPack extends AbstractPack
 
     /**
      * MqttPack constructor.
-     *
      * @throws \Exception
      */
     public function __construct()

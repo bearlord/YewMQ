@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use Yew\Yew;
+
 /**
  * This is the model class for table "{{%products}}".
  *

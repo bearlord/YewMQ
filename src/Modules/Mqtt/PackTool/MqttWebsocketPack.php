@@ -1,10 +1,12 @@
 <?php
+/**
+ * Yew framework
+ * @author tmtbe <896369042@qq.com>
+ */
 
 namespace App\Modules\Mqtt\PackTool;
 
-use App\Modules\Mqtt\Helpers\Time;
 use Yew\Core\Plugins\Logger\GetLogger;
-use Yew\Core\Server\Beans\ClientInfo;
 use Yew\Core\Server\Config\PortConfig;
 use Yew\Coroutine\Server\Server;
 
@@ -26,7 +28,8 @@ use Yew\Plugins\Redis\GetRedis;
 use Yew\Yew;
 
 /**
- * MQTT over WebSocket pack tool.
+ * Class MqttPack
+ * @package App\Plugins\Mqtt
  */
 class MqttWebsocketPack extends AbstractPack
 {
@@ -35,65 +38,98 @@ class MqttWebsocketPack extends AbstractPack
     use GetLogger;
     use GetConnection;
 
+    /**
+     * @var array
+     */
     protected array $packMap = [
         3 => PackV3::class,
         4 => PackV3::class,
         5 => PackV5::class
     ];
 
+    /**
+     * @var array
+     */
     protected array $unpackMap = [
         3 => UnPackV3::class,
         4 => UnPackV3::class,
         5 => UnPackV5::class
     ];
 
+    /**
+     * @var array
+     */
     protected array $protocolMap = [
         3 => ProtocolV3::class,
         4 => ProtocolV3::class,
         5 => ProtocolV5::class
     ];
 
-    /** Queue of reassembled MQTT packets from a single frame awaiting dispatch, keyed by fd. */
+    /**
+     * @var array Queue of fully reassembled MQTT packets that arrived inside the
+     *            same WebSocket frame but were not dispatched yet. Keyed by fd;
+     *            each value is a list of raw, complete packet strings.
+     */
     private static array $pendingPackets = [];
 
+    /**
+     * MqttPack constructor.
+     */
     public function __construct()
     {
         Server::$instance->getContainer()->injectOn($this);
     }
 
+
+
+    /**
+     * @param $protocolLevel
+     * @return object|ProtocolV3|ProtocolV5
+     */
     protected function getProtocolInstance($protocolLevel): object
     {
         $mapClass = $this->protocolMap[$protocolLevel];
         return Yew::createObject($mapClass);
     }
 
-
+    /**
+     * @param $buffer
+     * @return mixed
+     */
     public function encode($buffer): mixed
     {
         return $buffer;
     }
 
+    /**
+     * @param $buffer
+     * @return mixed
+     */
     public function decode($buffer): mixed
     {
         return $buffer;
     }
 
+    /**
+     * @param mixed $data
+     * @param PortConfig $portConfig
+     * @param string|null $topic
+     * @return mixed
+     */
     public function pack($data, PortConfig $portConfig, ?string $topic = null): mixed
     {
+        //printf("pack data: %s, %s\n", bin2hex($data), json_encode($data, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
         return $data;
     }
 
+    /**
+     * @param int $fd
+     * @param mixed $data
+     * @param PortConfig $portConfig
+     * @return ClientData|null
+     */
     public function unPack(int $fd, $data, PortConfig $portConfig): ?ClientData
     {
-        // Drop packets arriving on a dead connection. When the fd has already
-        // been closed (client disconnected, keep-alive timeout, will teardown)
-        // Swoole's getClientInfo() returns false, which would otherwise crash
-        // ClientData construction with a TypeError. Bail out early instead.
-        $server = Server::$instance->getServer();
-        if ($server === null || !$server->exists($fd)) {
-            return null;
-        }
-
         // If a previous frame delivered several MQTT packets at once, dispatch
         // the next queued one before consuming the new data.
         if (!empty(self::$pendingPackets[$fd])) {
@@ -137,12 +173,18 @@ class MqttWebsocketPack extends AbstractPack
         return $this->parsePacket($fd, $data, $portConfig);
     }
 
-    /** Parse a single complete MQTT packet and build its ClientData. */
+    /**
+     * Parse a single, complete MQTT packet and build the ClientData for it.
+     *
+     * @param int $fd
+     * @param string $data Complete MQTT packet bytes.
+     * @param PortConfig $portConfig
+     * @return ClientData
+     */
     private function parsePacket(int $fd, string $data, PortConfig $portConfig): ClientData
     {
-        //Server::$instance->setClientInfoSnapshot(Server::$instance->getServer()->getClientInfo($fd));
-
         $type = UnPackTool::getType($data);
+
         switch ($type) {
             case Types::CONNECT:
                 // Protocol version
@@ -162,6 +204,14 @@ class MqttWebsocketPack extends AbstractPack
                 break;
 
             default:
+                var_dump([
+                    'fd' => $fd,
+                    'worker_id' => Server::$instance->getServer()->worker_id,
+                    'data' => $data,
+                    'data-hex' => bin2hex($data),
+                    'protocol_level' => $this->getFdSession($fd, 'protocol_level')
+                ]);
+
                 $fdSessionData = $this->getFdSessionMulti($fd);
                 // Protocol level (already known for this connection)
                 $protocolLevel = $fdSessionData['protocol_level'];
@@ -172,6 +222,12 @@ class MqttWebsocketPack extends AbstractPack
         }
 
         $typeName = Types::getType($type);
+
+        printf("unpack data: %s\n", json_encode([
+            'type' => $typeName,
+            'type_name' => $typeName,
+            'data' => $unpackedData
+        ], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
 
         return new ClientData(
             $fd,
@@ -186,8 +242,15 @@ class MqttWebsocketPack extends AbstractPack
     }
 
     /**
-     * Decode the MQTT Remaining Length field and return the total packet length.
-     * Returns null when the buffer is incomplete or the length field is malformed.
+     * Decode the MQTT Remaining Length field and return the total packet length
+     * (1-byte fixed header + variable-length field + payload).
+     *
+     * Returns null when the buffer does not yet contain enough bytes to read
+     * the (variable-length) Remaining Length field, or when the field is
+     * malformed (exceeds the 4-byte maximum).
+     *
+     * @param string $buffer
+     * @return int|null
      */
     private function decodeMqttPacketLength(string $buffer): ?int
     {
@@ -212,6 +275,9 @@ class MqttWebsocketPack extends AbstractPack
         return 1 + ($offset - 1) + $value;
     }
 
+    /**
+     * @param PortConfig $portConfig
+     */
     public static function changePortConfig(PortConfig $portConfig)
     {
     }

@@ -30,7 +30,7 @@ class MqttMessage extends \App\Models\MqttMessage
                     'id' => AttributeTypecastBehavior::TYPE_INTEGER,
                     // Message direction (1: up, 2: down)
                     'direction' => AttributeTypecastBehavior::TYPE_INTEGER,
-                    // Sender and receiver client identifiers
+                    // Client identifiers
                     'sender_id' => AttributeTypecastBehavior::TYPE_STRING,
                     'receiver_id' => AttributeTypecastBehavior::TYPE_STRING,
                     // Topic and payload

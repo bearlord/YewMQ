@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 
 namespace App\Models;
 
@@ -16,7 +16,6 @@ class ProductsQuery extends \Yew\Framework\Db\ActiveQuery
 
     /**
      * {@inheritdoc}
-     *
      * @return Products[]|array
      */
     public function all($db = null): array
@@ -26,7 +25,6 @@ class ProductsQuery extends \Yew\Framework\Db\ActiveQuery
 
     /**
      * {@inheritdoc}
-     *
      * @return Products|array|null
      */
     public function one($db = null)

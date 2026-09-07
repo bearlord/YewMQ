@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 
 use Yew\Framework\Db\Migration;
 
@@ -9,7 +9,6 @@ class m250930_081922_create_mqtt_retained_message_table extends Migration
 {
     /**
      * {@inheritdoc}
-     *
      * @return bool
      */
     public function safeUp(): bool
@@ -45,7 +44,6 @@ class m250930_081922_create_mqtt_retained_message_table extends Migration
 
     /**
      * {@inheritdoc}
-     *
      * @return bool
      */
     public function safeDown(): bool

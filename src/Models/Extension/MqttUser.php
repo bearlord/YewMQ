@@ -29,15 +29,10 @@ class MqttUser extends \App\Models\MqttUser
                     // Primary key
                     'id' => AttributeTypecastBehavior::TYPE_INTEGER,
                     // Login username and hashed password
-                    'user_name' => AttributeTypecastBehavior::TYPE_STRING,
+                    'username' => AttributeTypecastBehavior::TYPE_STRING,
                     'password_hash' => AttributeTypecastBehavior::TYPE_STRING,
                     // Account status flag
                     'is_active' => AttributeTypecastBehavior::TYPE_INTEGER,
-                    // RFC 5802 SCRAM credential material
-                    'scram_salt' => AttributeTypecastBehavior::TYPE_STRING,
-                    'scram_iterations' => AttributeTypecastBehavior::TYPE_INTEGER,
-                    'scram_stored_key' => AttributeTypecastBehavior::TYPE_STRING,
-                    'scram_server_key' => AttributeTypecastBehavior::TYPE_STRING,
                     // DATETIME(6) timestamps kept as strings
                     'created_at' => AttributeTypecastBehavior::TYPE_STRING,
                     'updated_at' => AttributeTypecastBehavior::TYPE_STRING,

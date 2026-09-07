@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Created by PhpStorm.
  * User: 白猫
@@ -15,7 +15,6 @@ use Yew\Plugins\Pack\ClientData;
 use Yew\Plugins\Pack\PackTool\AbstractPack;
 /**
  * Class StreamPack
- *
  * @package Yew\Plugins\Pack\PackTool
  */
 class UdpPlainPack extends AbstractPack

@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 
 use Yew\Framework\Db\Migration;
 
@@ -9,7 +9,6 @@ class m260728_025937_create_mqtt_user_table extends Migration
 {
     /**
      * {@inheritdoc}
-     *
      * @return bool
      */
     public function safeUp(): bool
@@ -32,12 +31,6 @@ class m260728_025937_create_mqtt_user_table extends Migration
 
             // Record update timestamp
             'updated_at' => $this->dateTime(6)->notNull()->comment('Record update time'),
-
-            // RFC 5802 SCRAM-SHA-256 credential material (NULL = no SCRAM credential yet)
-            'scram_salt' => $this->string(64)->null()->comment('SCRAM salt (base64)'),
-            'scram_iterations' => $this->integer()->null()->comment('SCRAM iteration count (i)'),
-            'scram_stored_key' => $this->string(64)->null()->comment('SCRAM StoredKey (base64), derived from SaltedPassword'),
-            'scram_server_key' => $this->string(64)->null()->comment('SCRAM ServerKey (base64), derived from SaltedPassword'),
         ]);
 
         return true;
@@ -45,7 +38,6 @@ class m260728_025937_create_mqtt_user_table extends Migration
 
     /**
      * {@inheritdoc}
-     *
      * @return bool
      */
     public function safeDown(): bool

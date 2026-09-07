@@ -9,8 +9,8 @@ use Yew\Plugins\Connection\GetConnection;
 use Yew\Plugins\Pack\GetBoostSend;
 use Yew\Plugins\Route\Annotation\RequestMapping;
 use Yew\Plugins\Route\Annotation\WsController;
+use Yew\Core\Server\Server;
 use Yew\Plugins\Uid\GetUid;
-use App\Modules\Mqtt\Services\MqttClientService;
 
 /**
  * @WsController("/")
@@ -43,18 +43,14 @@ class WebsocketController extends Controller
      */
     public function actionBeforeWsClose(int $fd, int $reactorId): void
     {
-        $clientId = $this->getFdSession($fd, 'uid');
-        if (empty($clientId)) {
-            return;
+        $clientId = $this->getFdSession($fd, 'client_id') ?? null;
+
+        $this->clearFdSession($fd);
+
+        if (!empty($clientId)) {
+            $this->clearClientSession($clientId);
         }
 
-        // Abnormal close: no DISCONNECT packet, so build the minimal payload.
-        (new MqttClientService())->disconnectProcess($fd, ['client_id' => $clientId]);
+        $this->unBindUid($fd);
     }
-
-
-
-
-
-
 }
