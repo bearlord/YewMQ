@@ -5,6 +5,7 @@ namespace App\Modules\Mqtt\Controllers;
 use App\Modules\Mqtt\Services\MqttClientService;
 use App\Modules\Mqtt\Services\MqttPublishService;
 use App\Modules\Mqtt\Services\MqttSubscriptionService;
+use App\Modules\Mqtt\Services\RuleEngine;
 use Yew\Core\Plugins\Logger\GetLogger;
 use Yew\Coroutine\Server\Server;
 use Yew\Framework\Controller;
@@ -138,6 +139,28 @@ class MqttWebsocketController extends Controller
         } else {
             $this->cancelWill($clientId);
         }
+
+        // Expose connection-level metadata on the fd session so later PUBLISH /
+        // SUBSCRIBE rules can reference it (client_id is already stored upstream).
+        $this->setFdSession($fd, 'username', $username);
+        $this->setFdSession($fd, 'peerhost', $ipAddress);
+        $this->setFdSession($fd, 'keep_alive', $keepAlive);
+        $this->setFdSession($fd, 'mountpoint', '');
+
+        // Rule engine: fire $events/client_connected (failures must not break connect).
+        try {
+            RuleEngine::instance()->onEvent('$events/client_connected', [
+                'protocol_level' => $protocolLevel,
+                'client_id'      => $clientId,
+                'username'       => $username,
+                'peerhost'       => $ipAddress,
+                'keep_alive'     => $keepAlive,
+                'mountpoint'     => '',
+                'source'         => '$events/client_connected',
+            ]);
+        } catch (\Throwable $e) {
+            $this->warn('RuleEngine client_connected failed: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -171,6 +194,22 @@ class MqttWebsocketController extends Controller
 
         // Normal DISCONNECT: the Will must NOT be published.
         $this->cancelWill($clientId);
+
+        // Rule engine: fire $events/client_disconnected BEFORE clearing the fd session
+        // (metadata lives on it). Failures must not break the disconnect handshake.
+        try {
+            RuleEngine::instance()->onEvent('$events/client_disconnected', [
+                'protocol_level' => $protocolLevel,
+                'client_id'      => $clientId,
+                'username'       => $this->getFdSession($fd, 'username') ?? '',
+                'peerhost'       => $this->getFdSession($fd, 'peerhost') ?? '',
+                'keep_alive'     => $this->getFdSession($fd, 'keep_alive') ?? 0,
+                'mountpoint'     => $this->getFdSession($fd, 'mountpoint') ?? '',
+                'source'         => '$events/client_disconnected',
+            ]);
+        } catch (\Throwable $e) {
+            $this->warn('RuleEngine client_disconnected failed: ' . $e->getMessage());
+        }
 
         // Send a DISCONNECT packet back to the client to acknowledge the close.
         $disConnectMessage = new DisConnect();
@@ -311,6 +350,25 @@ class MqttWebsocketController extends Controller
             // Bind the topic to the subscriber uid for downstream PUBLISH routing.
             $this->addSubscription($topic, $uid);
         }
+
+        // Rule engine: fire $events/client_subscribe once per subscribed filter
+        // (EMQX emits one event per topic filter). Failures must not break subscribe.
+        try {
+            foreach (array_keys($topics) as $subTopic) {
+                RuleEngine::instance()->onEvent('$events/client_subscribe', [
+                    'protocol_level' => $protocolLevel,
+                    'client_id'      => $clientId,
+                    'username'       => $this->getFdSession($fd, 'username') ?? '',
+                    'peerhost'       => $this->getFdSession($fd, 'peerhost') ?? '',
+                    'keep_alive'     => $this->getFdSession($fd, 'keep_alive') ?? 0,
+                    'mountpoint'     => $this->getFdSession($fd, 'mountpoint') ?? '',
+                    'topic'          => $subTopic,
+                    'source'         => '$events/client_subscribe',
+                ]);
+            }
+        } catch (\Throwable $e) {
+            $this->warn('RuleEngine client_subscribe failed: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -363,7 +421,40 @@ class MqttWebsocketController extends Controller
             return;
         }
 
+        // Rule engine: evaluate configured rules against this inbound publish.
+        // A `drop` action returns true; we still ack the publisher per QoS but
+        // do NOT store/forward the message. Any failure must NOT break publish.
         $mqttPublishService = new MqttPublishService();
+        try {
+            $dropped = RuleEngine::instance()->onPublish([
+                'protocol_level' => $protocolLevel,
+                'client_id'     => $clientId,
+                'username'       => $this->getFdSession($fd, 'username') ?? '',
+                'peerhost'       => $this->getFdSession($fd, 'peerhost') ?? '',
+                'keep_alive'     => $this->getFdSession($fd, 'keep_alive') ?? 0,
+                'mountpoint'     => $this->getFdSession($fd, 'mountpoint') ?? '',
+                'topic'         => $topic,
+                'message'       => $message,
+                'qos'           => $qos,
+                'retain'        => $retain,
+                'source'        => '$events/message_publish',
+            ]);
+        } catch (\Throwable $e) {
+            $this->warn('RuleEngine onPublish failed: ' . $e->getMessage());
+            $dropped = false;
+        }
+
+        if ($dropped) {
+            // Message discarded by a rule: acknowledge the publisher (QoS dependent)
+            // but skip persistence and downstream forwarding.
+            if ($qos == 1) {
+                $mqttPublishService->pubAckProcess($fd, $protocolLevel, $messageId);
+            } elseif ($qos == 2) {
+                $mqttPublishService->pubRecProcess($fd, $protocolLevel, $messageId);
+            }
+            return;
+        }
+
         $mqttPublishService->publishProcess(
             $protocolLevel,
             $clientId,
