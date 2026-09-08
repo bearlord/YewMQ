@@ -16,6 +16,7 @@ use Yew\Mqtt\Message\SubAck;
 use Yew\Mqtt\Tools\ProtocolLevel;
 use Yew\Mqtt\Tools\TopicValidator;
 use Yew\Plugins\Connection\GetConnection;
+use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
 use Yew\Plugins\Pack\GetBoostSend;
 use Yew\Plugins\Route\Annotation\RequestMapping;
 use Yew\Plugins\Route\Annotation\WsController;
@@ -32,7 +33,7 @@ class MqttWebsocketController extends Controller
     use GetLogger;
     use GetUid;
     use GetTopic;
-    use GetConnection;
+    use GetMqttConnection;
 
     /**
      * @RequestMapping("connect")
@@ -64,11 +65,23 @@ class MqttWebsocketController extends Controller
 
         // Extract connection parameters from the payload.
         $username = $clientData['data']['username'] ?? null;
+        $password = $clientData['data']['password'] ?? null;
         // "session_start" mirrors the MQTT clean_session / clean_start flag.
         $sessionStart = $clientData["data"]['clean_session'] ?? false;
         $ipAddress = $this->clientData->getClientInfo()->getRemoteIp();
         $keepAlive = $clientData["data"]['keep_alive'] ?? null;
         $isActive = 1;
+
+        // Authentication hook: override authConnect() to enforce credentials.
+        // A falsy return rejects the connection.
+        if (!$this->authConnect($fd, $username, $password, $clientData)) {
+            // Authentication failed: refuse the connection and close the socket.
+            $connAck = new ConnAck();
+            $connAck->setProtocolLevel($protocolLevel)->setSessionPresent(false);
+            $this->autoBoostSend($fd, $connAck->getContents());
+            Server::$instance->closeFd($fd);
+            return;
+        }
 
         // Assemble the row to persist for this client.
         $saveData = [
@@ -100,6 +113,8 @@ class MqttWebsocketController extends Controller
 
         // Register session state: map fd -> uid and clientId
         $this->setFdSession($fd, 'uid', $clientPKId);
+        // Keep clientId on the fd session so the close handler can resolve the Will.
+        $this->setFdSession($fd, 'client_id', $clientId);
 
         // Register session state: map clientId -> uid / session_start.
         $this->setClientSessionMulti($clientId, [
@@ -109,6 +124,20 @@ class MqttWebsocketController extends Controller
 
         // Bind the connection fd to the uid for Topic/Uid plugin routing.
         $this->bindUid($fd, $clientPKId);
+
+        // MQTT keepalive: arm the idle watchdog (0/empty disables enforcement).
+        if ($keepAlive !== null) {
+            $this->setKeepAlive($fd, (int)$keepAlive);
+        }
+
+        // MQTT 5 Will: (re)register on every CONNECT. A CONNECT without a will
+        // clears any will left from a previous session (session takeover).
+        $will = $this->extractWill($clientData, $protocolLevel);
+        if ($will !== null) {
+            $this->registerWill($clientId, $will);
+        } else {
+            $this->cancelWill($clientId);
+        }
     }
 
     /**
@@ -140,6 +169,9 @@ class MqttWebsocketController extends Controller
         $mqttClientService = new MqttClientService();
         $mqttClientService->disconnectProcess($clientId);
 
+        // Normal DISCONNECT: the Will must NOT be published.
+        $this->cancelWill($clientId);
+
         // Send a DISCONNECT packet back to the client to acknowledge the close.
         $disConnectMessage = new DisConnect();
         $disConnectMessage->setProtocolLevel($protocolLevel);
@@ -169,6 +201,9 @@ class MqttWebsocketController extends Controller
         // MQTT protocol version and client identifier carried in the payload.
         $protocolLevel = $clientData['protocol_level'];
         $clientId = $clientData['client_id'];
+
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
 
         // Business layer: refresh the keep-alive / liveness state for this client.
         $mqttClientService = new MqttClientService();
@@ -208,6 +243,9 @@ class MqttWebsocketController extends Controller
 
         // Client identifier carried in the payload.
         $clientId = $clientData['client_id'];
+
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
 
         // Packet identifier used to correlate this SUBSCRIBE with its SUBACK.
         $messageId = $clientData["data"]['message_id'] ?? null;
@@ -300,6 +338,9 @@ class MqttWebsocketController extends Controller
 
         $clientId = $clientData['client_id'];
 
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
+
         $qos = $clientData["data"]['qos'] ?? 0;
 
         $retain = $clientData["data"]['retain'] ?? 0;
@@ -366,6 +407,9 @@ class MqttWebsocketController extends Controller
         $protocolLevel = $clientData['protocol_level'];
         $clientId = $clientData['client_id'];
 
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
+
         // Packet identifier that correlates this PUBREC with the earlier PUBLISH.
         $messageId = $clientData['data']['message_id'] ?? null;
 
@@ -405,6 +449,9 @@ class MqttWebsocketController extends Controller
         // MQTT protocol version carried in the payload.
         $protocolLevel = $clientData['protocol_level'];
 
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
+
         // Packet identifier that correlates this PUBREL with the earlier PUBLISH/PUBREC.
         $messageId = $clientData['data']['message_id'] ?? null;
 
@@ -442,6 +489,9 @@ class MqttWebsocketController extends Controller
         // Client identifier (subscriber) carried in the payload.
         $clientId = $clientData['client_id'];
 
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
+
         // Packet identifier that correlates this PUBCOMP with the earlier PUBLISH/PUBREL.
         $messageId = $clientData['data']['message_id'] ?? null;
 
@@ -477,6 +527,9 @@ class MqttWebsocketController extends Controller
         // Client identifier (subscriber) carried in the payload.
         $clientId = $clientData['client_id'];
 
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
+
         // Packet identifier that correlates this PUBACK with the earlier PUBLISH.
         $messageId = $clientData['data']['message_id'] ?? null;
 
@@ -488,5 +541,114 @@ class MqttWebsocketController extends Controller
 
         // PUBACK is terminal: finalize the in-flight ack record (no reply sent).
         (new MqttPublishService())->completeAckProcess($clientId, $messageId);
+    }
+
+    /**
+     * Authentication hook for the CONNECT handshake.
+     *
+     * Override this method to enforce username/password (or any other) auth.
+     * Return true to accept the connection, false to reject it. The default
+     * implementation is an open broker (no authentication).
+     *
+     * @param int $fd Connection file descriptor.
+     * @param string|null $username Decoded CONNECT username.
+     * @param string|null $password Decoded CONNECT password.
+     * @param array $clientData Full decoded CONNECT payload.
+     * @return bool
+     */
+    protected function authConnect(int $fd, ?string $username, ?string $password, array $clientData): bool
+    {
+        return true;
+    }
+
+    /**
+     * Extract a Will message from the decoded CONNECT payload.
+     *
+     * The controller receives a WS/JSON CONNECT (app-defined), so the Will may
+     * live either at the top level ($clientData['will']) or under the decoded
+     * MQTT packet ($clientData['data']['will']). Returns null when no Will is
+     * present; adjust the key paths if your client packs the Will differently.
+     *
+     * @param array $clientData decoded CONNECT payload
+     * @param mixed $protocolLevel
+     * @return array<string, mixed>|null
+     */
+    private function extractWill(array $clientData, ?int $protocolLevel): ?array
+    {
+        $raw = $clientData['will'] ?? ($clientData['data']['will'] ?? null);
+        if (empty($raw) || empty($raw['topic'])) {
+            return null;
+        }
+        return [
+            'topic' => $raw['topic'],
+            'payload' => $raw['message'] ?? ($raw['payload'] ?? ''),
+            'qos' => (int)($raw['qos'] ?? 0),
+            'retain' => (int)($raw['retain'] ?? 0),
+            'will_delay_interval' => (int)(
+                $raw['properties']['will_delay_interval'] ?? ($raw['will_delay_interval'] ?? 0)
+            ),
+            'protocol_level' => $protocolLevel,
+        ];
+    }
+
+    /**
+     * Handle WebSocket close: publish the client's pending Will on abnormal
+     * disconnect (abrupt drop or keepalive timeout). A normal DISCONNECT already
+     * cleared the Will via cancelWill(), so nothing is published then.
+     *
+     * @param int $fd
+     * @param int $reactorId
+     */
+    public function onWsClose(int $fd, int $reactorId): void
+    {
+        $clientId = $this->getFdSession($fd, 'client_id');
+        if (empty($clientId)) {
+            return;
+        }
+
+        $will = $this->getWill($clientId);
+        // The fd session is no longer needed once the connection is gone.
+        $this->clearFdSession($fd);
+
+        if (empty($will) || empty($will['topic'])) {
+            return; // No (or already consumed) Will.
+        }
+
+        $delay = (int)($will['will_delay_interval'] ?? 0);
+        if ($delay <= 0) {
+            $this->cancelWill($clientId);
+            $this->publishWill($will, $clientId);
+            return;
+        }
+
+        // MQTT 5 delayed Will: re-check at fire time so a reconnect with the
+        // same clientId (which calls cancelWill) can still cancel delivery.
+        \Swoole\Timer::after($delay * 1000, function () use ($clientId, $will) {
+            $pending = $this->getWill($clientId);
+            if (empty($pending) || empty($pending['topic'])) {
+                return; // Cancelled by a normal disconnect / reconnect.
+            }
+            $this->cancelWill($clientId);
+            $this->publishWill($pending, $clientId);
+        });
+    }
+
+    /**
+     * Deliver the Will through the existing publish pipeline (routing, QoS,
+     * retain and persistence all handled by MqttPublishService).
+     *
+     * @param array<string, mixed> $will
+     */
+    private function publishWill(array $will, string $clientId): void
+    {
+        $service = new MqttPublishService();
+        $service->publishProcess(
+            (int)($will['protocol_level'] ?? 5),
+            $clientId,
+            $will['topic'],
+            $will['payload'] ?? $will['message'] ?? '',
+            (int)($will['qos'] ?? 0),
+            (int)($will['retain'] ?? 0)
+        );
     }
 }

@@ -33,11 +33,6 @@ class Application
 
         $app->addPlugin(new CircuitBreakerPlugin());
 
-        $app->addPlugin(new ActorPlugin());
-
-//        $app->addPlugin(new AmqpPlugin());
-//        $app->addPlugin(new AmqpConsumerPlugin());
-
         $app->addPlugin(new ScheduledPlugin());
 
         $app->run(Application::class);
