@@ -3,7 +3,10 @@
 namespace App\Modules\Mqtt\Services;
 
 use App\Models\Extension\MqttRule;
+use App\Models\Extension\MqttRuleStat;
 use Yew\Client\HttpClient;
+use Yew\Framework\Db\Connection;
+use Yew\Yew;
 
 /**
  * Config-driven MQTT rule engine.
@@ -37,6 +40,11 @@ use Yew\Client\HttpClient;
  *   - log       : write a line to the error log. args: message (supports interpolation).
  *   - drop      : discard this inbound publish (no store / no forward). The publisher is
  *                 still acked per QoS. Only meaningful for $events/message_publish.
+ *   - mysql     : INSERT the interpolated context into a MySQL table (bridge action).
+ *                 Connection is dynamic per-action (host/port/db/user/pass).
+ *                 args: table, columns (col=>${...} template map), host, port, db,
+ *                 username, password, charset (defaults: 127.0.0.1/3306/utf8mb4).
+ *   - pgsql     : same as mysql, but via the PostgreSQL driver (default port 5432).
  *
  * Filter expression grammar (loose, case-insensitive):
  *   "" or NULL                     -> match all
@@ -75,6 +83,12 @@ class RuleEngine
 
     /** @var bool set true when a `drop` action fires during run() */
     private bool $dropped = false;
+
+    /** @var array per-rule runtime counters: ruleId => ['hits'=>int,'ok'=>int,'fail'=>int] */
+    private array $ruleStats = [];
+
+    /** @var bool true once in-memory counters have unflushed changes */
+    private bool $statsDirty = false;
 
     public static function instance(): self
     {
@@ -121,7 +135,8 @@ class RuleEngine
             if (!$this->matchFilter($rule['filter'] ?? null, $context)) {
                 continue;
             }
-            $this->runActions($rule['actions'] ?? [], $context);
+            $this->incr($rule['id'], 'hits');
+            $this->runActions($rule['id'], $rule['actions'] ?? [], $context);
         }
         return $this->dropped;
     }
@@ -134,6 +149,7 @@ class RuleEngine
         $now = microtime(true);
         if ($this->rules === null || ($now - $this->lastProbe) > $this->probeInterval) {
             $this->reloadIfChanged();
+            $this->flushStatsIfDirty();
             $this->lastProbe = $now;
         }
         return $this->rules ?? [];
@@ -491,29 +507,97 @@ class RuleEngine
         return $slen === $plen;
     }
 
-    private function runActions(array $actions, array $context): void
+    private function runActions($ruleId, array $actions, array $context): void
     {
         foreach ($actions as $action) {
             if (!is_array($action) || empty($action['type'])) {
                 continue;
             }
+            $type = $action['type'];
             $args = $action['args'] ?? [];
-            switch ($action['type']) {
-                case 'republish':
-                    $this->actionRepublish($args, $context);
-                    break;
-                case 'http':
-                    $this->actionHttp($args, $context);
-                    break;
-                case 'log':
-                    $this->actionLog($args, $context);
-                    break;
-                case 'drop':
-                    $this->dropped = true;
-                    break;
-                default:
-                    break;
+            try {
+                switch ($type) {
+                    case 'republish':
+                        $this->actionRepublish($args, $context);
+                        break;
+                    case 'http':
+                        $this->actionHttp($args, $context);
+                        break;
+                    case 'log':
+                        $this->actionLog($args, $context);
+                        break;
+                    case 'drop':
+                        $this->dropped = true;
+                        break;
+                    case 'mysql':
+                        $this->actionMysql($args, $context);
+                        break;
+                    case 'pgsql':
+                        $this->actionPgsql($args, $context);
+                        break;
+                    default:
+                        break;
+                }
+                $this->incr($ruleId, 'ok');
+            } catch (\Throwable $e) {
+                $this->incr($ruleId, 'fail');
+                error_log('[rule-engine] action ' . $type . ' failed: ' . $e->getMessage());
             }
+        }
+    }
+
+    private function incr($ruleId, string $key): void
+    {
+        if (!isset($this->ruleStats[$ruleId])) {
+            $this->ruleStats[$ruleId] = ['hits' => 0, 'ok' => 0, 'fail' => 0];
+        }
+        $this->ruleStats[$ruleId][$key]++;
+        $this->statsDirty = true;
+    }
+
+    /**
+     * In-memory counters for THIS worker only. The authoritative counters live
+     * in the mqtt_rule_stat table (flushed every probe interval) so the console
+     * `mqtt-rule/stats` command can read them from the long-running broker.
+     */
+    public function stats(): array
+    {
+        return $this->ruleStats;
+    }
+
+    public function resetStats(): void
+    {
+        try {
+            MqttRuleStat::deleteAll();
+        } catch (\Throwable $e) {
+            error_log('[rule-engine] resetStats failed: ' . $e->getMessage());
+        }
+        $this->ruleStats = [];
+        $this->statsDirty = false;
+    }
+
+    /**
+     * Merge in-memory counters into the mqtt_rule_stat table, then clear memory.
+     * Called from getRules() on every probe tick (per worker, every ~5s).
+     */
+    private function flushStatsIfDirty(): void
+    {
+        if (!$this->statsDirty || $this->ruleStats === []) {
+            return;
+        }
+        try {
+            foreach ($this->ruleStats as $id => $c) {
+                $model = MqttRuleStat::findOne($id) ?? new MqttRuleStat();
+                $model->rule_id = (int)$id;
+                $model->hits = (int)($model->hits ?? 0) + $c['hits'];
+                $model->ok = (int)($model->ok ?? 0) + $c['ok'];
+                $model->fail = (int)($model->fail ?? 0) + $c['fail'];
+                $model->save();
+            }
+            $this->ruleStats = [];
+            $this->statsDirty = false;
+        } catch (\Throwable $e) {
+            error_log('[rule-engine] flushStats failed: ' . $e->getMessage());
         }
     }
 
@@ -561,23 +645,108 @@ class RuleEngine
         $port = $parsed['port'] ?? ($ssl ? 443 : 80);
         $path = ($parsed['path'] ?? '/') . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
 
-        try {
-            $client = new HttpClient($parsed['host'], (int)$port, $ssl);
-            if ($method === 'GET') {
-                $client->get($path, $headers);
-            } else {
-                $client->post($path, $body, $headers);
-            }
-            $client->close();
-        } catch (\Throwable $e) {
-            error_log('[rule-engine] http action failed: ' . $e->getMessage());
+        $client = new HttpClient($parsed['host'], (int)$port, $ssl);
+        if ($method === 'GET') {
+            $client->get($path, $headers);
+        } else {
+            $client->post($path, $body, $headers);
         }
+        $client->close();
     }
 
     private function actionLog(array $args, array $context): void
     {
         $msg = $this->interpolate((string)($args['message'] ?? 'rule fired'), $context);
         error_log('[rule-engine] ' . $msg);
+    }
+
+    /**
+     * Persist the message context into a MySQL table (bridge action).
+     * See actionDbInsert() / buildDynamicConnection() for the shared logic.
+     */
+    private function actionMysql(array $args, array $context): void
+    {
+        $this->actionDbInsert($args, $context, 'mysql');
+    }
+
+    /**
+     * Persist the message context into a PostgreSQL table (bridge action).
+     * Same semantics as actionMysql, but connects via the pgsql driver
+     * (default port 5432; charset is passed through if the driver honours it).
+     */
+    private function actionPgsql(array $args, array $context): void
+    {
+        $this->actionDbInsert($args, $context, 'pgsql');
+    }
+
+    /**
+     * Shared INSERT logic for the mysql / pgsql bridge actions.
+     */
+    private function actionDbInsert(array $args, array $context, string $driver): void
+    {
+        $table = (string)($args['table'] ?? '');
+        if ($table === '' || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table)) {
+            throw new \RuntimeException($driver . ' action: invalid table name "' . $table . '"');
+        }
+        $cols = $args['columns'] ?? [];
+        if (!is_array($cols) || $cols === []) {
+            throw new \RuntimeException($driver . ' action: empty columns map for table ' . $table);
+        }
+        $row = [];
+        foreach ($cols as $col => $tpl) {
+            if (!is_string($col) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $col)) {
+                throw new \RuntimeException($driver . ' action: invalid column name "' . $col . '"');
+            }
+            $row[$col] = $this->interpolate((string)$tpl, $context);
+        }
+        $db = $this->buildDynamicConnection($args, $driver);
+        $db->createCommand()->insert($table, $row)->execute();
+    }
+
+    /**
+     * Build (and coroutine-cache) a dynamic DB connection from the action args.
+     *
+     * host/port/db/username/password/charset are supplied per-action, so each rule
+     * can target an arbitrary database at runtime. The connection is created with
+     * Yew::createObject() (same mechanism as Application::getDb()) and cached per
+     * coroutine via setContextValue, mirroring the framework's connection pooling.
+     */
+    private function buildDynamicConnection(array $args, string $driver): Connection
+    {
+        $host = (string)($args['host'] ?? '127.0.0.1');
+        $port = (int)($args['port'] ?? ($driver === 'pgsql' ? 5432 : 3306));
+        $dbname = (string)($args['db'] ?? '');
+        if ($dbname === '' || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $dbname)) {
+            throw new \RuntimeException($driver . ' action: invalid database name "' . $dbname . '"');
+        }
+        $username = (string)($args['username'] ?? '');
+        $password = (string)($args['password'] ?? '');
+        $charset = (string)($args['charset'] ?? 'utf8mb4');
+
+        if ($driver === 'pgsql') {
+            // PostgreSQL DSN has no charset field; client encoding defaults to UTF8.
+            $dsn = sprintf('pgsql:host=%s;port=%d;dbname=%s', $host, $port, $dbname);
+        } else {
+            $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=%s', $host, $port, $dbname, $charset);
+        }
+
+        $sig = md5($driver . '|' . $dsn . '|' . $username);
+        $contextKey = 'rule-db:' . $sig;
+        $db = getContextValue($contextKey);
+        if (empty($db)) {
+            /** @var Connection $db */
+            $db = Yew::createObject([
+                'class' => Connection::class,
+                'poolName' => 'rule-db-' . $sig,
+                'dsn' => $dsn,
+                'username' => $username,
+                'password' => $password,
+                'charset' => $charset,
+            ]);
+            $db->open();
+            setContextValue($contextKey, $db);
+        }
+        return $db;
     }
 
     /**

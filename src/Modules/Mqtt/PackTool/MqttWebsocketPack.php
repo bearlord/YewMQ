@@ -19,7 +19,7 @@ use Yew\Mqtt\Protocol\ProtocolV5;
 use Yew\Mqtt\Protocol\Types;
 
 use Yew\Mqtt\Tools\UnPackTool;
-use Yew\Plugins\Connection\GetConnection;
+use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
 use Yew\Plugins\Pack\ClientData;
 use Yew\Plugins\Pack\GetBoostSend;
 use Yew\Plugins\Pack\PackTool\AbstractPack;
@@ -36,7 +36,7 @@ class MqttWebsocketPack extends AbstractPack
     use GetBoostSend;
     use GetRedis;
     use GetLogger;
-    use GetConnection;
+    use GetMqttConnection;
 
     /**
      * @var array
@@ -89,6 +89,11 @@ class MqttWebsocketPack extends AbstractPack
     protected function getProtocolInstance($protocolLevel): object
     {
         $mapClass = $this->protocolMap[$protocolLevel];
+
+        var_dump([
+            'protocolLevel' => $protocolLevel,
+            'mapClass' => $mapClass
+        ]);
         return Yew::createObject($mapClass);
     }
 
@@ -130,6 +135,9 @@ class MqttWebsocketPack extends AbstractPack
      */
     public function unPack(int $fd, $data, PortConfig $portConfig): ?ClientData
     {
+
+        printf("time: %s, date:%s\n", date('Y-m-d H:i:s'), bin2hex($data));
+
         // If a previous frame delivered several MQTT packets at once, dispatch
         // the next queued one before consuming the new data.
         if (!empty(self::$pendingPackets[$fd])) {

@@ -4,12 +4,14 @@ namespace App\Modules\Mqtt\Services;
 
 use App\Models\Extension\MqttMessageAck;
 use Carbon\Carbon;
+use Yew\Core\Plugins\Logger\GetLogger;
 use Yew\Core\Server\Server;
 use Yew\Mqtt\Message\Publish;
 use Yew\Mqtt\Message\PubAck;
 use Yew\Mqtt\Message\PubComp;
 use Yew\Mqtt\Message\PubRec;
 use Yew\Mqtt\Message\PubRel;
+use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
 use Yew\Plugins\Pack\GetBoostSend;
 use Yew\Plugins\Topic\GetTopic;
 use Yew\Plugins\Uid\GetUid;
@@ -19,6 +21,8 @@ class MqttPublishService
     use GetUid;
     use GetTopic;
     use GetBoostSend;
+    use GetLogger;
+    use GetMqttConnection;
 
     public const DIRECTION_UP = 1;
 
@@ -296,5 +300,207 @@ class MqttPublishService
             'pubrec_at' => (new Carbon())->format('Y-m-d H:i:s.u'),
         ], false);
         $ack->save(false);
+    }
+
+    /**
+     * Handle an inbound PUBLISH from a client (the client is the publisher).
+     *
+     * Refreshes the keepalive watchdog, enforces entry-level rejects (missing
+     * topic/payload, missing QoS 1/2 packet id), evaluates the
+     * $events/message_publish rule engine, and either drops the message (still
+     * acking the publisher per QoS) or persists + forwards it. The publisher is
+     * acknowledged with PUBACK (QoS 1) / PUBREC (QoS 2) as required.
+     *
+     * Only the controller's clientData object is passed in; the service resolves
+     * the fd / protocol level / clientId / payload from it.
+     *
+     * @param object $clientData ClientData (has getFd/getData).
+     * @return void
+     */
+    public function inboundPublishProcess(object $clientData): void
+    {
+        $fd = $clientData->getFd();
+        $payload = $clientData->getData();
+        $protocolLevel = $payload['protocol_level'] ?? null;
+        $clientId = $payload['client_id'] ?? null;
+        $data = $payload['data'] ?? [];
+
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
+
+        $qos = $data['qos'] ?? 0;
+        $retain = $data['retain'] ?? 0;
+        $topic = $data['topic'] ?? null;
+        $message = $data['message'] ?? null;
+
+        // A PUBLISH without a topic or payload is malformed; close the connection.
+        if (empty($topic) || empty($message)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        // Packet identifier used for QoS 1 / QoS 2 acknowledgement.
+        $messageId = $data['message_id'] ?? null;
+
+        // A QoS 1/2 PUBLISH must carry a packet identifier; reject it otherwise.
+        if ($qos > 0 && empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        // Resolve session metadata once (single IPC) for the rule event.
+        $sess = $this->getFdSessionMulti($fd) ?? [];
+
+        // Rule engine: evaluate configured rules against this inbound publish.
+        // A `drop` action returns true; we still ack the publisher per QoS but
+        // do NOT store/forward the message. Any failure must NOT break publish.
+        try {
+            $dropped = RuleEngine::instance()->onPublish([
+                'protocol_level' => $protocolLevel,
+                'client_id'      => $clientId,
+                'username'       => $sess['username'] ?? '',
+                'peerhost'       => $sess['peerhost'] ?? '',
+                'keep_alive'     => $sess['keep_alive'] ?? 0,
+                'mountpoint'     => $sess['mountpoint'] ?? '',
+                'topic'          => $topic,
+                'message'        => $message,
+                'qos'            => $qos,
+                'retain'         => $retain,
+                'source'         => '$events/message_publish',
+            ]);
+        } catch (\Throwable $e) {
+            $this->warn('RuleEngine onPublish failed: ' . $e->getMessage());
+            $dropped = false;
+        }
+
+        if ($dropped) {
+            // Message discarded by a rule: acknowledge the publisher (QoS dependent)
+            // but skip persistence and downstream forwarding.
+            if ($qos == 1) {
+                $this->pubAckProcess($fd, $protocolLevel, $messageId);
+            } elseif ($qos == 2) {
+                $this->pubRecProcess($fd, $protocolLevel, $messageId);
+            }
+            return;
+        }
+
+        $this->publishProcess($protocolLevel, $clientId, $topic, $message, $qos, $retain);
+
+        // Acknowledge the publisher according to the QoS level.
+        if ($qos == 1) {
+            $this->pubAckProcess($fd, $protocolLevel, $messageId);
+        } elseif ($qos == 2) {
+            $this->pubRecProcess($fd, $protocolLevel, $messageId);
+        }
+    }
+
+    /**
+     * Handle a subscriber PUBREC (outbound QoS 2 flow): mark the in-flight ack
+     * record at stage 2 and reply with a PUBREL carrying the same packet id.
+     *
+     * Only the controller's clientData object is passed in; the service resolves
+     * the fd / protocol level / clientId / packet id from it.
+     *
+     * @param object $clientData ClientData (has getFd/getData).
+     * @return void
+     */
+    public function pubrecInboundProcess(object $clientData): void
+    {
+        $fd = $clientData->getFd();
+        $payload = $clientData->getData();
+        $protocolLevel = $payload['protocol_level'] ?? null;
+        $clientId = $payload['client_id'] ?? null;
+        $messageId = $payload['data']['message_id'] ?? null;
+
+        $this->touchActivity($fd);
+
+        if (empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        $this->markPubrecProcess($clientId, $messageId);
+        $this->pubRelProcess($fd, $protocolLevel, $messageId);
+    }
+
+    /**
+     * Handle a client PUBREL (inbound QoS 2 flow): reply with a PUBCOMP to free
+     * the publisher's in-flight state.
+     *
+     * Only the controller's clientData object is passed in; the service resolves
+     * the fd / protocol level / packet id from it.
+     *
+     * @param object $clientData ClientData (has getFd/getData).
+     * @return void
+     */
+    public function pubrelInboundProcess(object $clientData): void
+    {
+        $fd = $clientData->getFd();
+        $payload = $clientData->getData();
+        $protocolLevel = $payload['protocol_level'] ?? null;
+        $messageId = $payload['data']['message_id'] ?? null;
+
+        $this->touchActivity($fd);
+
+        if (empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        $this->pubCompProcess($fd, $protocolLevel, $messageId);
+    }
+
+    /**
+     * Handle a subscriber PUBCOMP (terminal step of the outbound QoS 2 flow):
+     * finalize the in-flight ack record. No reply is sent.
+     *
+     * Only the controller's clientData object is passed in; the service resolves
+     * the fd / clientId / packet id from it.
+     *
+     * @param object $clientData ClientData (has getFd/getData).
+     * @return void
+     */
+    public function pubcompInboundProcess(object $clientData): void
+    {
+        $fd = $clientData->getFd();
+        $payload = $clientData->getData();
+        $clientId = $payload['client_id'] ?? null;
+        $messageId = $payload['data']['message_id'] ?? null;
+
+        $this->touchActivity($fd);
+
+        if (empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        $this->completeAckProcess($clientId, $messageId);
+    }
+
+    /**
+     * Handle a subscriber PUBACK (terminal step of the outbound QoS 1 flow):
+     * finalize the in-flight ack record. No reply is sent.
+     *
+     * Only the controller's clientData object is passed in; the service resolves
+     * the fd / clientId / packet id from it.
+     *
+     * @param object $clientData ClientData (has getFd/getData).
+     * @return void
+     */
+    public function pubackInboundProcess(object $clientData): void
+    {
+        $fd = $clientData->getFd();
+        $payload = $clientData->getData();
+        $clientId = $payload['client_id'] ?? null;
+        $messageId = $payload['data']['message_id'] ?? null;
+
+        $this->touchActivity($fd);
+
+        if (empty($messageId)) {
+            Server::$instance->closeFd($fd);
+            return;
+        }
+
+        $this->completeAckProcess($clientId, $messageId);
     }
 }

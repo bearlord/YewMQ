@@ -5,11 +5,17 @@ namespace App\Modules\Mqtt\Services;
 use App\Models\Extension\MqttClient;
 use Carbon\Carbon;
 use Yew\Coroutine\Server\Server;
+use Yew\Mqtt\Message\PingResp;
 use Yew\Mqtt\Tools\ProtocolLevel;
+use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
+use Yew\Plugins\Pack\GetBoostSend;
 use Yew\Plugins\Uid\GetUid;
 
 class MqttClientService
 {
+    use GetBoostSend;
+    use GetMqttConnection;
+
     /**
      * @param $id
      * @return array|null
@@ -56,7 +62,6 @@ class MqttClientService
         }
         return $model->toArray();
     }
-
 
     /**
      * @param string $clientId
@@ -108,7 +113,6 @@ class MqttClientService
         return $model->id;
     }
 
-
     /**
      * @param string $clientId
      * @param array $data
@@ -142,13 +146,11 @@ class MqttClientService
             (new MqttOfflineMessageService())->deleteOfflineMessageByClientId($clientId);
         }
 
-
         return $this->updateMqttClient($clientId, [
             'is_active' => 0,
             'last_disconnected_time' => (new Carbon())->format('Y-m-d H:i:s.u')
         ]);
     }
-
 
     public function pingreqProcess(string $clientId): bool
     {
@@ -156,5 +158,34 @@ class MqttClientService
             'is_active' => 1,
             'last_connected_time' => (new Carbon())->format('Y-m-d H:i:s.u')
         ]);
+    }
+
+    /**
+     * Handle an inbound PINGREQ: refresh the keep-alive watchdog, update the
+     * client's liveness state in the business layer, and reply with PINGRESP.
+     *
+     * Only the controller's clientData object is passed in; the service
+     * resolves the fd / protocol level / clientId from it.
+     *
+     * @param object $clientData ClientData (has getFd/getData).
+     * @return void
+     */
+    public function pingreqInboundProcess(object $clientData): void
+    {
+        $fd = $clientData->getFd();
+        $payload = $clientData->getData();
+        $protocolLevel = $payload['protocol_level'] ?? null;
+        $clientId = $payload['client_id'] ?? null;
+
+        // Any inbound packet proves liveness; refresh the keepalive watchdog.
+        $this->touchActivity($fd);
+
+        // Business: refresh the keep-alive / liveness state for this client.
+        $this->pingreqProcess($clientId);
+
+        // Reply with a PINGRESP packet to acknowledge the heartbeat.
+        $pingResp = new PingResp();
+        $pingResp->setProtocolLevel($protocolLevel);
+        $this->autoBoostSend($fd, $pingResp->getContents());
     }
 }

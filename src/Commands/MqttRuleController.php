@@ -3,6 +3,7 @@
 namespace App\Commands;
 
 use App\Models\Extension\MqttRule;
+use App\Modules\Mqtt\Services\RuleEngine;
 use Yew\Framework\Console\Controller;
 use Yew\Framework\Helpers\Console;
 
@@ -17,6 +18,8 @@ use Yew\Framework\Helpers\Console;
  *   ./yew mqtt-rule/update --rule-id=1 --enabled=0
  *   ./yew mqtt-rule/toggle --rule-id=1
  *   ./yew mqtt-rule/delete --rule-id=1
+ *   ./yew mqtt-rule/stats                 # show per-rule hit/action counters
+ *   ./yew mqtt-rule/reset-stats           # reset the counters
  *
  * Edits take effect at runtime within a few seconds (the engine probes
  * mqtt_rule.updated_at and reloads automatically).
@@ -142,6 +145,39 @@ class MqttRuleController extends Controller
             return 1;
         }
         $this->stdout("Rule #{$this->ruleId} enabled=" . $rule->enabled . ".\n");
+        return 0;
+    }
+
+    /**
+     * Show runtime hit/action stats for each rule (counters are per worker).
+     *
+     *   hits   : times the rule's filter matched an event
+     *   actOK  : actions executed without throwing
+     *   actFail: actions that threw (see the broker error log for details)
+     */
+    public function actionStats(): int
+    {
+        // Counters live in the mqtt_rule_stat table (flushed by the long-running
+        // broker workers), so this short-lived console process reads the DB directly.
+        $rows = MqttRuleStat::find()->orderBy('rule_id ASC')->all();
+        if (empty($rows)) {
+            $this->stdout("No rule stats recorded yet.\n", Console::FG_YELLOW);
+            return 0;
+        }
+        $this->stdout(sprintf("%-6s %-10s %-10s %-10s\n", 'Rule', 'Hits', 'ActOK', 'ActFail'));
+        foreach ($rows as $r) {
+            $this->stdout(sprintf("%-6s %-10d %-10d %-10d\n", $r->rule_id, $r->hits, $r->ok, $r->fail));
+        }
+        return 0;
+    }
+
+    /**
+     * Reset the in-memory rule stats counters.
+     */
+    public function actionResetStats(): int
+    {
+        RuleEngine::instance()->resetStats();
+        $this->stdout("Rule stats reset.\n");
         return 0;
     }
 
