@@ -22,7 +22,5 @@ class MqttClientLogic
         $mqttConnection->subscribe($topics);
 
         $messageRes = $mqttConnection->recv();
-
-        var_dump($messageRes);
     }
 }

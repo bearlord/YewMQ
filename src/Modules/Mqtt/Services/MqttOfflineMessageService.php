@@ -34,4 +34,18 @@ class MqttOfflineMessageService
 
     }
 
+    /**
+     * Return the buffered (undelivered) offline messages for a client, oldest first.
+     *
+     * @param string $clientId
+     * @return MqttOfflineMessage[]
+     */
+    public function getUndeliveredByClientId(string $clientId): array
+    {
+        return MqttOfflineMessage::find()
+            ->where(['client_id' => $clientId, 'delivered' => 0])
+            ->orderBy(['id' => 'ASC'])
+            ->all();
+    }
+
 }

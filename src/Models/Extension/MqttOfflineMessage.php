@@ -33,6 +33,8 @@ class MqttOfflineMessage extends \App\Models\MqttOfflineMessage
                     'topic' => AttributeTypecastBehavior::TYPE_STRING,
                     // Payload (binary) kept as string
                     'payload' => AttributeTypecastBehavior::TYPE_STRING,
+                    // Packet id assigned on delivery (links ack back to this row)
+                    'packet_id' => AttributeTypecastBehavior::TYPE_INTEGER,
                     // QoS level
                     'qos' => AttributeTypecastBehavior::TYPE_INTEGER,
                     // Delivery status

@@ -35,7 +35,7 @@ class MqttOfflineMessage extends \Yew\Framework\Db\ActiveRecord
         return [
             [['client_id', 'topic', 'payload'], 'required'],
             [['payload'], 'string'],
-            [['qos', 'delivered'], 'integer'],
+            [['qos', 'delivered', 'packet_id'], 'integer'],
             [['delivered_at', 'created_at', 'updated_at'], 'safe'],
             [['client_id'], 'string', 'max' => 128],
             [['topic'], 'string', 'max' => 240],
@@ -55,6 +55,7 @@ class MqttOfflineMessage extends \Yew\Framework\Db\ActiveRecord
             'qos' => 'Qos',
             'delivered' => 'Delivered',
             'delivered_at' => 'Delivered At',
+            'packet_id' => 'Packet ID',
             'created_at' => 'Created At',
             'updated_at' => 'Updated At',
         ];

@@ -247,13 +247,6 @@ class MqttPack extends AbstractPack
                 //保存客户端的连接信息
                 $this->setClientConnectionInfo($clientId, $unpackedData);
 
-                var_dump([
-                    'type' => $type,
-                    'level' => $protocolLevel,
-                    'client_id' => $clientId,
-                    'data' => $unpackedData
-                ]);
-
                 break;
 
             default:
@@ -263,13 +256,7 @@ class MqttPack extends AbstractPack
                 $unpackedData = call_user_func([$this->getProtocolInstance($protocolLevel), 'unpack'], $data);
                 //客户端标识
                 $clientId = $this->getClientIdFromFd($fd);
-
-                var_dump([
-                    "unpackedData" => $unpackedData,
-                    "clientId" => $clientId,
-                    "protocolLevel" => $protocolLevel,
-                ]);
-        }
+                }
 
         return new ClientData($fd, $portConfig->getBaseType(), 'onReceive', [
             'type' => $type,

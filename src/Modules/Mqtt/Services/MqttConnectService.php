@@ -32,11 +32,11 @@ class MqttConnectService
      */
     public function connectInboundProcess(object $clientData): void
     {
-        $fd = $clientData->getFd();
+        $fd      = $clientData->getFd();
         $payload = $clientData->getData();
 
         $protocolLevel = $payload['protocol_level'] ?? null;
-        $clientId = $payload['client_id'] ?? null;
+        $clientId      = $payload['client_id'] ?? null;
 
         // Reject the connection when a required field is missing.
         if (empty($protocolLevel) || empty($clientId)) {
@@ -44,8 +44,8 @@ class MqttConnectService
             return;
         }
 
-        $username = $payload['data']['username'] ?? null;
-        $password = $payload['data']['password'] ?? null;
+        $username  = $payload['data']['username'] ?? null;
+        $password  = $payload['data']['password'] ?? null;
         $ipAddress = $clientData->getClientInfo()->getRemoteIp();
 
         // Authentication hook (overridable in a subclass).
@@ -70,11 +70,11 @@ class MqttConnectService
      * Authentication is handled by connectInboundProcess()/authConnect() before
      * this method is called, so it assumes the connection is accepted.
      *
-     * @param int $fd Connection file descriptor.
-     * @param array $clientData Decoded CONNECT payload (clientData->getData()).
+     * @param int      $fd            Connection file descriptor.
+     * @param array    $clientData    Decoded CONNECT payload (clientData->getData()).
      * @param int|null $protocolLevel MQTT protocol version.
-     * @param string $clientId Client identifier.
-     * @param string $ipAddress Remote peer IP.
+     * @param string   $clientId      Client identifier.
+     * @param string   $ipAddress     Remote peer IP.
      * @return void
      */
     public function connectProcess(int $fd, array $clientData, ?int $protocolLevel, string $clientId, string $ipAddress): void
@@ -83,7 +83,7 @@ class MqttConnectService
         $username = $clientData['data']['username'] ?? null;
         // "session_start" mirrors the MQTT clean_session / clean_start flag.
         $sessionStart = $clientData['data']['clean_session'] ?? false;
-        $keepAlive = $clientData['data']['keep_alive'] ?? null;
+        $keepAlive    = $clientData['data']['keep_alive'] ?? null;
 
         // Build the CONNACK: session present is false when starting clean.
         $connAck = new ConnAck();
@@ -108,13 +108,19 @@ class MqttConnectService
         $clientPKId = (new MqttClientService())->saveOrUpdateMqttClient($clientId, $saveData);
 
         // Register session state: map fd -> uid and clientId.
-        $this->setFdSession($fd, 'uid', $clientPKId);
         // Keep clientId on the fd session so the close handler can resolve the Will.
-        $this->setFdSession($fd, 'client_id', $clientId);
+        $this->setFdSessionMulti($fd, [
+            'uid' => $clientPKId,
+            'client_id' => $clientId,
+            'username' => $username,
+            'peerhost' => $ipAddress,
+            'mountpoint' => '',
+        ]);
 
         // Register session state: map clientId -> uid / session_start.
         $this->setClientSessionMulti($clientId, [
             'uid' => $clientPKId,
+            'fd' => $fd,
             'session_start' => $sessionStart,
         ]);
 
@@ -123,7 +129,7 @@ class MqttConnectService
 
         // MQTT keepalive: arm the idle watchdog (0/empty disables enforcement).
         if ($keepAlive !== null) {
-            $this->setKeepAlive($fd, (int)$keepAlive);
+            $this->setKeepAlive($fd, max(0, (int)$keepAlive));
         }
 
         // MQTT 5 Will: (re)register on every CONNECT. A CONNECT without a will
@@ -135,23 +141,26 @@ class MqttConnectService
             $this->cancelWill($clientId);
         }
 
-        // Expose connection-level metadata on the fd session so later PUBLISH /
-        // SUBSCRIBE rules can reference it (client_id is already stored upstream).
-        $this->setFdSession($fd, 'username', $username);
-        $this->setFdSession($fd, 'peerhost', $ipAddress);
-        $this->setFdSession($fd, 'keep_alive', $keepAlive);
-        $this->setFdSession($fd, 'mountpoint', '');
+        // Replay any messages buffered for this client's restored (persistent) session,
+        // matching its restored subscriptions. QoS handshakes are honoured by
+        // deliverOfflineMessages(); delivered rows are marked/cleared so a later
+        // SUBSCRIBE will not re-deliver them. Clean sessions have their subscriptions
+        // and offline buffer cleared upstream, so this is a no-op for them.
+        $subs = (new MqttSubscriptionService())->getSubscriptionsByClientId($clientId);
+        if ($subs !== []) {
+            (new MqttPublishService())->deliverOfflineMessages($fd, $protocolLevel, $clientId, $subs);
+        }
 
         // Rule engine: fire $events/client_connected (failures must not break connect).
         try {
             RuleEngine::instance()->onEvent('$events/client_connected', [
                 'protocol_level' => $protocolLevel,
-                'client_id'      => $clientId,
-                'username'       => $username ?? '',
-                'peerhost'       => $ipAddress,
-                'keep_alive'     => $keepAlive ?? 0,
-                'mountpoint'     => '',
-                'source'         => '$events/client_connected',
+                'client_id' => $clientId,
+                'username' => $username ?? '',
+                'peerhost' => $ipAddress,
+                'keep_alive' => $keepAlive ?? 0,
+                'mountpoint' => '',
+                'source' => '$events/client_connected',
             ]);
         } catch (\Throwable $e) {
             $this->warn('RuleEngine client_connected failed: ' . $e->getMessage());
@@ -164,10 +173,10 @@ class MqttConnectService
      * rejects the connection; the default implementation is an open broker
      * that accepts any connection.
      *
-     * @param int $fd Connection file descriptor.
-     * @param string|null $username Decoded CONNECT username.
-     * @param string|null $password Decoded CONNECT password.
-     * @param array $clientData Full decoded CONNECT payload.
+     * @param int         $fd         Connection file descriptor.
+     * @param string|null $username   Decoded CONNECT username.
+     * @param string|null $password   Decoded CONNECT password.
+     * @param array       $clientData Full decoded CONNECT payload.
      * @return bool
      */
     protected function authConnect(int $fd, ?string $username, ?string $password, array $clientData): bool
@@ -184,7 +193,7 @@ class MqttConnectService
      * MQTT packet ($clientData['data']['will']). Returns null when no Will is
      * present; adjust the key paths if your client packs the Will differently.
      *
-     * @param array $clientData decoded CONNECT payload
+     * @param array    $clientData decoded CONNECT payload
      * @param int|null $protocolLevel
      * @return array<string, mixed>|null
      */

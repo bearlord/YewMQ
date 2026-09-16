@@ -3,6 +3,7 @@
 namespace App\Modules\Mqtt\Services;
 
 use App\Models\Extension\MqttMessageAck;
+use App\Models\Extension\MqttOfflineMessage;
 use Carbon\Carbon;
 use Yew\Core\Plugins\Logger\GetLogger;
 use Yew\Core\Server\Server;
@@ -11,6 +12,7 @@ use Yew\Mqtt\Message\PubAck;
 use Yew\Mqtt\Message\PubComp;
 use Yew\Mqtt\Message\PubRec;
 use Yew\Mqtt\Message\PubRel;
+use Yew\Mqtt\Tools\ProtocolLevel;
 use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
 use Yew\Plugins\Pack\GetBoostSend;
 use Yew\Plugins\Topic\GetTopic;
@@ -48,15 +50,18 @@ class MqttPublishService
         return self::$packetIdSeq;
     }
 
-    public function publishProcess(
+    /**
+     * Persist the inbound PUBLISH as an up-leg trace record and return its id.
+     * Does not forward to subscribers — see deliverToSubscribers().
+     */
+    private function persistInboundPublish(
         int    $protocolLevel,
         string $senderId,
         string $topic,
         string $message,
         int    $qos = 0,
         int    $retain = 0
-    ): bool
-    {
+    ): int {
         $mqttMessageService = new MqttMessageService();
         $upMessage = $mqttMessageService->saveMessage([
             'direction' => self::DIRECTION_UP,
@@ -67,8 +72,28 @@ class MqttPublishService
             'retain' => $retain,
             'published_time' => (new Carbon())->format('Y-m-d H:i:s.u')
         ]);
-        $upMessageId = $upMessage->id;
 
+        return (int)$upMessage->id;
+    }
+
+    /**
+     * Forward a persisted inbound PUBLISH to matching subscribers (down-leg).
+     *
+     * Applies RETAIN (at delivery time, i.e. after a QoS 2 PUBREL commits the
+     * message), queues offline messages for unavailable subscribers (QoS > 0),
+     * and records each down-leg delivery + in-flight ack.
+     *
+     * @param int $upMessageId id of the up-leg trace record (foreign key)
+     */
+    private function deliverToSubscribers(
+        int    $upMessageId,
+        int    $protocolLevel,
+        string $senderId,
+        string $topic,
+        string $message,
+        int    $qos = 0,
+        int    $retain = 0
+    ): bool {
         if ($retain) {
             $mqttRetainMessageService = new MqttRetainedMessageService();
             $mqttRetainMessageService->saveRetainedMessage([
@@ -79,20 +104,21 @@ class MqttPublishService
             ]);
         }
 
-        $publishMessage = (new Publish())
-            ->setProtocolLevel($protocolLevel)
-            ->setQos($qos)
-            ->setTopic($topic)
-            ->setMessage($message);
-
         $subscribers = $this->getSubscribers($topic);
         if (empty($subscribers)) {
             return true;
         }
 
+        $mqttMessageService = new MqttMessageService();
         $mqttClientService = new MqttClientService();
         $mqttOfflineMessageService = new MqttOfflineMessageService();
         $now = (new Carbon())->format('Y-m-d H:i:s.u');
+
+        $publishMessage = (new Publish())
+            ->setProtocolLevel($protocolLevel)
+            ->setQos($qos)
+            ->setTopic($topic)
+            ->setMessage($message);
 
         foreach ($subscribers as $uid) {
             $_fd = $this->getUidFd($uid);
@@ -160,6 +186,205 @@ class MqttPublishService
         }
 
         return true;
+    }
+
+    /**
+     * MQTT topic filter match (single-level '+' / multi-level '#').
+     *
+     * @param string $topic   Concrete topic of the published/offline message.
+     * @param string $filter  Subscription filter (may contain wildcards).
+     * @return bool true when $topic is covered by $filter.
+     */
+    private function topicMatch(string $topic, string $filter): bool
+    {
+        if ($filter === '#') {
+            return true;
+        }
+        $sub = explode('/', $topic);
+        $pat = explode('/', $filter);
+        $slen = count($sub);
+        $plen = count($pat);
+        foreach ($pat as $i => $p) {
+            if ($p === '#') {
+                return true;
+            }
+            if ($i >= $slen) {
+                return false;
+            }
+            if ($p === '+') {
+                continue;
+            }
+            if ($p !== $sub[$i]) {
+                return false;
+            }
+        }
+        return $slen === $plen;
+    }
+
+    /**
+     * Replay buffered offline messages to a client that just (re)subscribed.
+     *
+     * Reads the undelivered rows queued for this client while it was offline and
+     * whose topic matches one of the freshly subscribed filters (each buffered
+     * message is delivered at most once, even if several filters match it). The
+     * effective QoS is min(published qos, max granted qos of the matching filters).
+     *
+     *  - QoS 0: fire-and-forget; the buffered row is deleted right after send.
+     *  - QoS 1/2: a down-leg packet id is allocated, a mqtt_message_ack record is
+     *    created and the row is marked delivered (carrying that packet id). When the
+     *    subscriber later acks (PUBACK / PUBCOMP) completeAckProcess() clears the row,
+     *    reusing the exact same ack-completion path as live deliveries — so QoS
+     *    handshakes are honoured for replayed messages too.
+     *
+     * @param int $fd Now-connected subscriber file descriptor.
+     * @param int|null $protocolLevel MQTT protocol version (3.1.1 / 5).
+     * @param string $clientId Subscriber client identifier.
+     * @param array $topics Map of topic filter => subscribe options (e.g. ['qos'=>int]).
+     * @return void
+     */
+    public function deliverOfflineMessages(int $fd, ?int $protocolLevel, string $clientId, array $topics): void
+    {
+        $filters = [];
+        foreach ($topics as $filter => $opts) {
+            $filters[$filter] = (int)($opts['qos'] ?? 0);
+        }
+        if ($filters === []) {
+            return;
+        }
+
+        $rows = (new MqttOfflineMessageService())->getUndeliveredByClientId($clientId);
+        if ($rows === []) {
+            return;
+        }
+
+        $mqttMessageService = new MqttMessageService();
+        $now = (new Carbon())->format('Y-m-d H:i:s.u');
+        $sentIds = [];
+
+        foreach ($rows as $row) {
+            // Deliver each buffered message at most once.
+            if (isset($sentIds[$row->id])) {
+                continue;
+            }
+
+            // Keep only messages whose topic matches a subscribed filter, and compute
+            // the highest granted QoS among the matching filters.
+            $matched = false;
+            $grantedQos = 0;
+            foreach ($filters as $filter => $gq) {
+                if ($this->topicMatch((string)$row->topic, (string)$filter)) {
+                    $matched = true;
+                    $grantedQos = max($grantedQos, $gq);
+                }
+            }
+            if (!$matched) {
+                continue;
+            }
+
+            $deliverQos = min((int)$row->qos, $grantedQos);
+            if ($deliverQos < 0) {
+                $deliverQos = 0;
+            }
+
+            $publishMessage = (new Publish())
+                ->setProtocolLevel($protocolLevel ?? ProtocolLevel::PROTOCOL_LEVEL_V3_1_1)
+                ->setQos($deliverQos)
+                ->setTopic((string)$row->topic)
+                ->setMessage((string)$row->payload);
+
+            $packetId = 0;
+            if ($deliverQos > 0) {
+                $packetId = $this->nextPacketId();
+                $publishMessage->setMessageId($packetId);
+            }
+
+            $this->autoBoostSend($fd, $publishMessage->getContents());
+
+            // Down-leg trace record (parity with live delivery).
+            $down = $mqttMessageService->saveMessage([
+                'direction'     => self::DIRECTION_DOWN,
+                'sender_id'     => $clientId,
+                'receiver_id'   => $clientId,
+                'topic'         => (string)$row->topic,
+                'payload'       => (string)$row->payload,
+                'qos'           => $deliverQos,
+                'retain'        => 0,
+                'published_time' => $now,
+            ]);
+
+            if ($deliverQos > 0) {
+                $ack = new MqttMessageAck();
+                $ack->setAttributes([
+                    'mqtt_message_id' => (int)$down->id,
+                    'direction'       => self::DIRECTION_DOWN,
+                    'receiver_id'     => $clientId,
+                    'packet_id'       => $packetId,
+                    'qos'             => $deliverQos,
+                    'stage'           => 1,
+                    'ack_status'      => 0,
+                    'published_at'    => $now,
+                ], false);
+                $ack->save(false);
+            }
+
+            // QoS 0 has no handshake: drop the buffered row immediately.
+            // QoS 1/2 keeps it (delivered=1 + packet_id) until the ack clears it.
+            if ($deliverQos === 0) {
+                $row->delete();
+            } else {
+                $row->delivered = 1;
+                $row->delivered_at = $now;
+                $row->packet_id = $packetId;
+                $row->save(false);
+            }
+
+            $sentIds[$row->id] = true;
+        }
+    }
+
+    /**
+     * Persist + immediately forward a PUBLISH (QoS 0/1 fast path).
+     */
+    public function publishProcess(
+        int    $protocolLevel,
+        string $senderId,
+        string $topic,
+        string $message,
+        int    $qos = 0,
+        int    $retain = 0
+    ): bool {
+        $upMessageId = $this->persistInboundPublish($protocolLevel, $senderId, $topic, $message, $qos, $retain);
+
+        return $this->deliverToSubscribers($upMessageId, $protocolLevel, $senderId, $topic, $message, $qos, $retain);
+    }
+
+    /**
+     * Hold a QoS 2 PUBLISH until its PUBREL arrives. Stored in the fd session
+     * (Connection process) keyed by the publisher's packet id, so it survives
+     * across the two requests and is cleared automatically when the fd closes.
+     */
+    private function stashQos2Inbound(int $fd, int $messageId, array $data): void
+    {
+        $pending = $this->getFdSession($fd, 'qos2_inbound') ?? [];
+        $pending[$messageId] = $data;
+        $this->setFdSession($fd, 'qos2_inbound', $pending);
+    }
+
+    /**
+     * Retrieve and remove a held QoS 2 PUBLISH for the given packet id.
+     * Returns null when nothing is pending (e.g. a rule-dropped message).
+     */
+    private function takeQos2Inbound(int $fd, int $messageId): ?array
+    {
+        $pending = $this->getFdSession($fd, 'qos2_inbound') ?? [];
+        if (!isset($pending[$messageId])) {
+            return null;
+        }
+        $data = $pending[$messageId];
+        unset($pending[$messageId]);
+        $this->setFdSession($fd, 'qos2_inbound', $pending);
+
+        return $data;
     }
 
     /**
@@ -269,6 +494,13 @@ class MqttPublishService
             'completed_at' => (new Carbon())->format('Y-m-d H:i:s.u'),
         ], false);
         $ack->save(false);
+
+        // If this ack finalizes a replayed offline message, clear the buffered row.
+        // Harmless for live deliveries (no offline row carries this packet id).
+        MqttOfflineMessage::deleteAll([
+            'client_id' => $receiverId,
+            'packet_id' => $packetId,
+        ]);
     }
 
     /**
@@ -308,8 +540,10 @@ class MqttPublishService
      * Refreshes the keepalive watchdog, enforces entry-level rejects (missing
      * topic/payload, missing QoS 1/2 packet id), evaluates the
      * $events/message_publish rule engine, and either drops the message (still
-     * acking the publisher per QoS) or persists + forwards it. The publisher is
-     * acknowledged with PUBACK (QoS 1) / PUBREC (QoS 2) as required.
+     * acking the publisher per QoS) or persists + forwards it. QoS 0/1 forward
+     * immediately; QoS 2 is held until PUBREL to honor exactly-once. The
+     * publisher is acknowledged with PUBACK (QoS 1) / PUBREC (QoS 2) now, and
+     * PUBCOMP follows the later PUBREL.
      *
      * Only the controller's clientData object is passed in; the service resolves
      * the fd / protocol level / clientId / payload from it.
@@ -317,7 +551,7 @@ class MqttPublishService
      * @param object $clientData ClientData (has getFd/getData).
      * @return void
      */
-    public function inboundPublishProcess(object $clientData): void
+    public function publishInboundProcess(object $clientData): void
     {
         $fd = $clientData->getFd();
         $payload = $clientData->getData();
@@ -373,18 +607,29 @@ class MqttPublishService
             $dropped = false;
         }
 
-        if ($dropped) {
-            // Message discarded by a rule: acknowledge the publisher (QoS dependent)
-            // but skip persistence and downstream forwarding.
-            if ($qos == 1) {
-                $this->pubAckProcess($fd, $protocolLevel, $messageId);
-            } elseif ($qos == 2) {
-                $this->pubRecProcess($fd, $protocolLevel, $messageId);
+        // A `drop` rule skips persistence/forwarding, but the publisher is still
+        // acknowledged per QoS — so the acknowledgement below is identical for both
+        // paths, and only the publish step is conditional on !$dropped.
+        if (!$dropped) {
+            if ($qos == 2) {
+                // QoS 2 (exactly-once): persist now, but hold the message until
+                // PUBREL — deliver only after the publisher commits, so a message
+                // is never forwarded before its handshake completes.
+                $upMessageId = $this->persistInboundPublish($protocolLevel, $clientId, $topic, $message, $qos, $retain);
+                $this->stashQos2Inbound($fd, $messageId, [
+                    'up_message_id'  => $upMessageId,
+                    'protocol_level' => $protocolLevel,
+                    'sender_id'      => $clientId,
+                    'topic'          => $topic,
+                    'message'        => $message,
+                    'qos'            => $qos,
+                    'retain'         => $retain,
+                ]);
+            } else {
+                // QoS 0/1: persist + forward immediately.
+                $this->publishProcess($protocolLevel, $clientId, $topic, $message, $qos, $retain);
             }
-            return;
         }
-
-        $this->publishProcess($protocolLevel, $clientId, $topic, $message, $qos, $retain);
 
         // Acknowledge the publisher according to the QoS level.
         if ($qos == 1) {
@@ -445,6 +690,22 @@ class MqttPublishService
         if (empty($messageId)) {
             Server::$instance->closeFd($fd);
             return;
+        }
+
+        // Publisher has committed the QoS 2 message: deliver the held PUBLISH
+        // now (applies RETAIN + offline queueing + ack tracking), then finalize
+        // the handshake with PUBCOMP.
+        $pending = $this->takeQos2Inbound($fd, $messageId);
+        if (!empty($pending)) {
+            $this->deliverToSubscribers(
+                $pending['up_message_id'],
+                $pending['protocol_level'],
+                $pending['sender_id'],
+                $pending['topic'],
+                $pending['message'],
+                $pending['qos'],
+                $pending['retain']
+            );
         }
 
         $this->pubCompProcess($fd, $protocolLevel, $messageId);

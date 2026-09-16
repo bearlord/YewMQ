@@ -3,6 +3,7 @@
 namespace App\Modules\Mqtt\Services;
 
 use App\Models\Extension\MqttSubscription;
+use App\Modules\Mqtt\Services\MqttPublishService;
 use Yew\Core\Plugins\Logger\GetLogger;
 use Yew\Coroutine\Server\Server;
 use Yew\Mqtt\Hex\ReasonCode;
@@ -46,6 +47,28 @@ class MqttSubscriptionService
 
         return true;
 
+    }
+
+    /**
+     * Return this client's persisted subscriptions as a topic-filter => options map
+     * suitable for deliverOfflineMessages(). Used to replay buffered offline
+     * messages on CONNECT for a restored (persistent) session.
+     *
+     * @param string $clientId
+     * @return array Map of topic filter => ['qos' => int]
+     */
+    public function getSubscriptionsByClientId(string $clientId): array
+    {
+        $rows = MqttSubscription::find()
+            ->where(['client_id' => $clientId])
+            ->all();
+
+        $map = [];
+        foreach ($rows as $row) {
+            $map[$row->topic] = ['qos' => (int)$row->qos];
+        }
+
+        return $map;
     }
 
     /**
@@ -115,6 +138,10 @@ class MqttSubscriptionService
             ]);
             $this->addSubscription($topic, (string)$uid);
         }
+
+        // 3b. Replay any messages buffered while this client was offline and
+        //     matching the filters it just subscribed to (QoS handshakes honoured).
+        (new MqttPublishService())->deliverOfflineMessages($fd, $protocolLevel, $clientId, $topics);
 
         // 4. Rule engine: fire $events/client_subscribe once per filter.
         try {

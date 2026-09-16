@@ -4,12 +4,10 @@ namespace App\Modules\Mqtt\Services;
 
 use App\Models\Extension\MqttClient;
 use Carbon\Carbon;
-use Yew\Coroutine\Server\Server;
 use Yew\Mqtt\Message\PingResp;
 use Yew\Mqtt\Tools\ProtocolLevel;
 use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
 use Yew\Plugins\Pack\GetBoostSend;
-use Yew\Plugins\Uid\GetUid;
 
 class MqttClientService
 {
@@ -17,10 +15,10 @@ class MqttClientService
     use GetMqttConnection;
 
     /**
-     * @param $id
+     * @param int $id
      * @return array|null
      */
-    public function getItemById($id): ?array
+    public function getItemById(int $id): ?array
     {
         $model = MqttClient::find()
             ->where([
@@ -140,7 +138,7 @@ class MqttClientService
      */
     public function disconnectProcess(string $clientId): bool
     {
-        $sessionStart = Server::getClientSession($clientId, 'session_start');
+        $sessionStart = $this->getClientSession($clientId, 'session_start');
         if ($sessionStart) {
             (new MqttSubscriptionService)->deleteSubscriptionsByClientId($clientId);
             (new MqttOfflineMessageService())->deleteOfflineMessageByClientId($clientId);

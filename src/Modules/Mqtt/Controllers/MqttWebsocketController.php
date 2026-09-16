@@ -68,7 +68,7 @@ class MqttWebsocketController extends Controller
      */
     public function actionPublish(): void
     {
-        (new MqttPublishService())->inboundPublishProcess($this->clientData);
+        (new MqttPublishService())->publishInboundProcess($this->clientData);
     }
 
     /**

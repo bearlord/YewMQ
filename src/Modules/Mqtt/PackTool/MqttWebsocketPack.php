@@ -6,6 +6,7 @@
 
 namespace App\Modules\Mqtt\PackTool;
 
+use Carbon\Carbon;
 use Yew\Core\Plugins\Logger\GetLogger;
 use Yew\Core\Server\Config\PortConfig;
 use Yew\Coroutine\Server\Server;
@@ -81,7 +82,6 @@ class MqttWebsocketPack extends AbstractPack
     }
 
 
-
     /**
      * @param $protocolLevel
      * @return object|ProtocolV3|ProtocolV5
@@ -89,11 +89,6 @@ class MqttWebsocketPack extends AbstractPack
     protected function getProtocolInstance($protocolLevel): object
     {
         $mapClass = $this->protocolMap[$protocolLevel];
-
-        var_dump([
-            'protocolLevel' => $protocolLevel,
-            'mapClass' => $mapClass
-        ]);
         return Yew::createObject($mapClass);
     }
 
@@ -116,28 +111,27 @@ class MqttWebsocketPack extends AbstractPack
     }
 
     /**
-     * @param mixed $data
-     * @param PortConfig $portConfig
+     * @param mixed       $data
+     * @param PortConfig  $portConfig
      * @param string|null $topic
      * @return mixed
      */
     public function pack($data, PortConfig $portConfig, ?string $topic = null): mixed
     {
-        //printf("pack data: %s, %s\n", bin2hex($data), json_encode($data, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        printf("%s, server send data: %s\n",
+            (new Carbon())->format('Y-m-d H:i:s.u'),
+            bin2hex($data));
         return $data;
     }
 
     /**
-     * @param int $fd
-     * @param mixed $data
+     * @param int        $fd
+     * @param mixed      $data
      * @param PortConfig $portConfig
      * @return ClientData|null
      */
     public function unPack(int $fd, $data, PortConfig $portConfig): ?ClientData
     {
-
-        printf("time: %s, date:%s\n", date('Y-m-d H:i:s'), bin2hex($data));
-
         // If a previous frame delivered several MQTT packets at once, dispatch
         // the next queued one before consuming the new data.
         if (!empty(self::$pendingPackets[$fd])) {
@@ -161,7 +155,7 @@ class MqttWebsocketPack extends AbstractPack
             $firstPacket = null;
             while (($packetLength = $this->decodeMqttPacketLength(Server::$buffers[$fd])) !== null
                 && strlen(Server::$buffers[$fd]) >= $packetLength) {
-                $packet = substr(Server::$buffers[$fd], 0, $packetLength);
+                $packet               = substr(Server::$buffers[$fd], 0, $packetLength);
                 Server::$buffers[$fd] = substr(Server::$buffers[$fd], $packetLength);
 
                 if ($firstPacket === null) {
@@ -184,8 +178,8 @@ class MqttWebsocketPack extends AbstractPack
     /**
      * Parse a single, complete MQTT packet and build the ClientData for it.
      *
-     * @param int $fd
-     * @param string $data Complete MQTT packet bytes.
+     * @param int        $fd
+     * @param string     $data Complete MQTT packet bytes.
      * @param PortConfig $portConfig
      * @return ClientData
      */
@@ -212,14 +206,6 @@ class MqttWebsocketPack extends AbstractPack
                 break;
 
             default:
-                var_dump([
-                    'fd' => $fd,
-                    'worker_id' => Server::$instance->getServer()->worker_id,
-                    'data' => $data,
-                    'data-hex' => bin2hex($data),
-                    'protocol_level' => $this->getFdSession($fd, 'protocol_level')
-                ]);
-
                 $fdSessionData = $this->getFdSessionMulti($fd);
                 // Protocol level (already known for this connection)
                 $protocolLevel = $fdSessionData['protocol_level'];
@@ -231,11 +217,14 @@ class MqttWebsocketPack extends AbstractPack
 
         $typeName = Types::getType($type);
 
-        printf("unpack data: %s\n", json_encode([
-            'type' => $typeName,
-            'type_name' => $typeName,
-            'data' => $unpackedData
-        ], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        printf("%s, server receive data: %s\n",
+            (new Carbon())->format('Y-m-d H:i:s.u'),
+            json_encode([
+                'type' => $typeName,
+                'type_name' => $typeName,
+                'data' => $unpackedData,
+                'data-hex' => bin2hex($data),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
         return new ClientData(
             $fd,
@@ -267,15 +256,15 @@ class MqttWebsocketPack extends AbstractPack
         }
 
         $multiplier = 1;
-        $value = 0;
-        $offset = 1; // skip the 1-byte fixed header
+        $value      = 0;
+        $offset     = 1; // skip the 1-byte fixed header
 
         do {
             if ($offset - 1 >= 4 || !isset($buffer[$offset])) {
                 return null; // malformed or incomplete length field
             }
-            $digit = ord($buffer[$offset]);
-            $value += ($digit & 0x7F) * $multiplier;
+            $digit      = ord($buffer[$offset]);
+            $value      += ($digit & 0x7F) * $multiplier;
             $multiplier *= 128;
             $offset++;
         } while (($digit & 0x80) !== 0);
