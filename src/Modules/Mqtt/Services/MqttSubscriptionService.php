@@ -3,7 +3,6 @@
 namespace App\Modules\Mqtt\Services;
 
 use App\Models\Extension\MqttSubscription;
-use App\Modules\Mqtt\Services\MqttPublishService;
 use Yew\Core\Plugins\Logger\GetLogger;
 use Yew\Coroutine\Server\Server;
 use Yew\Mqtt\Hex\ReasonCode;

@@ -17,7 +17,7 @@ class m260917_090000_add_packet_id_to_mqtt_offline_message extends Migration
     public function safeUp(): bool
     {
         $this->addColumn('{{%mqtt_offline_message}}', 'packet_id', $this->integer()->null()->comment(
-            'Down-leg MQTT packet id assigned when the buffered message is delivered (links the ack record back to this row)'
+            'Down-leg packet id assigned on delivery; links this row to its ack record'
         ));
 
         $this->createIndex('idx_client_packet', '{{%mqtt_offline_message}}', ['client_id', 'packet_id']);
