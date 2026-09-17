@@ -1,0 +1,93 @@
+blade:
+  namespace:
+    app:
+      path: ${ROOT_DIR}/src/Views
+
+
+session:
+  timeout: 3600
+  database: 2
+  sessionStorageClass: 'Yew\Plugins\Session\RedisSessionStorage'
+  sessionUsage: 'cookie'
+  #  headerIdentity: 'sessionId'
+  #  domain: '192.168.108.130'
+  path: '/'
+  #  httpOnly: true
+  secure: false
+
+
+yew:
+  components:
+    user:
+      class:  'Yew\Yii\Web\User'
+      identityClass:  'App\Models\User'
+      enableAutoLogin:  true
+
+  db:
+    default:
+      dsn: 'mysql:host=127.0.0.1;dbname=yew_demo'
+      username: 'root'
+      password: 'Root!123'
+      tablePrefix: 'ocs_'
+      poolMaxNumber: 2
+      enableSchemaCache: false
+      schemaCacheDuration: 3600
+      schemaCache: cache
+
+  redis:
+    default:
+      host: '127.0.0.1'
+      database: 3
+      options:
+        minConnections: 3
+        maxConnections: 50
+        waitTimeout: 20
+
+  bootstrap:
+    - generator
+
+  modules:
+    generator:
+      class: 'Yew\Framework\Generator\Module'
+
+  queue:
+    default:
+      class: 'Yew\Framework\Queue\Drivers\Redis\Queue'
+      minIntervalTime: 5
+    queue2:
+      class: 'Yew\Framework\Queue\Drivers\Redis\Queue'
+      minIntervalTime: 5
+
+  rateLimit:
+    create: 1,
+    consume: 1,
+    capacity: 2,
+    limitCallback: null,
+    waitTimeout: 1,
+    storage:
+      class: 'Yew\Plugins\RateLimit\Storage\RedisStorage'
+
+  amqp:
+    default:
+      host: 127.0.0.1
+      port: 5672
+      user: guest
+      password: guest
+      keepalive: true
+      poolMaxNumber: 4
+  #    concurrent:
+  #      limit: 10
+
+  actor:
+    maxCount:  10000
+    maxClassCount: 10000
+    workerCount: 2
+    mailboxCapacity: 10000
+    multicastChannelCapacity: 10000
+
+  topic:
+    storage:
+      memory:
+        type: 'memory'
+      db:
+        type: 'db'

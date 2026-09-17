@@ -1,0 +1,61 @@
+yew:
+  aop:
+    excludePaths:
+      - src/Libs
+      - src/Filters
+      - src/Views
+      - src/Assets
+
+  logger:
+    level: DEBUG
+
+  profiles:
+    active: local
+
+  server:
+    name: yew-demo
+    workerNum: 2
+#    maxRequest: 1000
+    maxConn: 655350
+    maxCoroutine: 100000
+    debug: true
+    logLevel: 6
+#    documentRoot: /root/projects/esd-framework-demo/web
+#    enableStaticHandler: true
+    coroutineSocketRecvLength: 655350
+    heartbeatCheckInterval: 360
+    heartbeatIdleTime: 1200
+
+
+  port:
+    http:
+      protocolType: http
+      host: 0.0.0.0
+      port: 8080
+      packageMaxLength: 60000000
+
+    websocket:
+      protocolType: ws
+      host: 0.0.0.0
+      port: 8182
+      packTool: 'App\Plugins\Pack\PackTool\WsJsonPack'
+
+    websockets:
+      host: 0.0.0.0
+      port: 8183
+      protocolType: wss
+      sslKeyFile: '/root/projects/esd-framework-demo/resources/test.key'
+      sslCertFile: '/root/projects/esd-framework-demo/resources/test.pem'
+
+    mqtt:
+      host: 0.0.0.0
+      port: 1883
+      protocolType: mqtt
+      packTool: 'App\Plugins\Mqtt\MqttPack'
+
+    mqtt_over_ws:
+      protocolType: mqtt_over_ws
+      host: 0.0.0.0
+      port: 8083
+      packTool: 'App\Modules\Mqtt\PackTool\MqttWebsocketPack'
+      openRecvBuffer: true

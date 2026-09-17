@@ -1,0 +1,104 @@
+yew:
+  aop:
+    excludePaths:
+      - src/Libs
+      - src/Filters
+      - src/Views
+      - src/Assets
+
+  logger:
+    level: DEBUG
+
+  profiles:
+    active: local
+
+  server:
+    name: yew-demo
+    workerNum: 2
+#    maxRequest: 1000
+    maxConn: 655350
+    maxCoroutine: 100000
+    debug: true
+    logLevel: 6
+#    documentRoot: /root/projects/esd-framework-demo/web
+#    enableStaticHandler: true
+    coroutineSocketRecvLength: 655350
+    heartbeatCheckInterval: 360
+    heartbeatIdleTime: 1200
+
+
+  port:
+    http:
+      protocolType: http
+      host: 0.0.0.0
+      port: 8080
+      packageMaxLength: 60000000
+
+    https:
+      host: 0.0.0.0
+      port: 8081
+      protocolType: https
+      sslKeyFile: '/root/projects/esd-framework-demo/resources/test.key'
+      sslCertFile: '/root/projects/esd-framework-demo/resources/test.pem'
+
+    websocket:
+      protocolType: ws
+      host: 0.0.0.0
+      port: 8182
+      packTool: 'App\Plugins\Pack\PackTool\WsJsonPack'
+
+    websockets:
+      host: 0.0.0.0
+      port: 8183
+      protocolType: wss
+      sslKeyFile: '/root/projects/esd-framework-demo/resources/test.key'
+      sslCertFile: '/root/projects/esd-framework-demo/resources/test.pem'
+
+    tcp:
+      host: 0.0.0.0
+      port: 8284
+      protocolType: tcp
+      packTool: 'App\Plugins\Pack\PackTool\StreamPack'
+
+    tcp_secure:
+      host: 0.0.0.0
+      port: 8285
+      protocolType: tcp_secure
+      packTool: 'App\Plugins\Pack\PackTool\StreamPack'
+      sslKeyFile: '/root/projects/esd-framework-demo/resources/test.key'
+      sslCertFile: '/root/projects/esd-framework-demo/resources/test.pem'
+
+#    jsonRpc:
+#      host: 0.0.0.0
+#      port: 8086
+#      openHttpProtocol: false
+#      openWebsocketProtocol: false
+#      sockType: 1
+#      packTool: 'App\Plugins\Pack\PackTool\JsonRpcPack'
+#      autoSendReturnValue: true
+
+    mqtt:
+      host: 0.0.0.0
+      port: 1883
+      protocolType: mqtt
+      packTool: 'App\Plugins\Mqtt\MqttPack'
+
+    mqtt_over_ws:
+      protocolType: mqtt_over_ws
+      host: 0.0.0.0
+      port: 8083
+      packTool: 'App\Modules\Mqtt\PackTool\MqttWebsocketPack'
+      openRecvBuffer: true
+
+#    udp:
+#      host: 0.0.0.0
+#      port: 9691
+#      protocolType: udp
+#      packTool: 'App\Plugins\Pack\PackTool\UdpPlainPack'
+#
+#    udp_secure:
+#      host: 0.0.0.0
+#      port: 9692
+#      protocolType: udp_secure
+#      sslKeyFile: '/root/projects/esd-framework-demo/resources/test.key'
+#      sslCertFile: '/root/projects/esd-framework-demo/resources/test.pem'

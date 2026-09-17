@@ -1,0 +1,13 @@
+<?php
+
+require __DIR__ . '/vendor/autoload.php';
+
+const ROOT_DIR = __DIR__ . "/";
+
+const RES_DIR = __DIR__ . "/resources";
+
+error_reporting(E_ALL);
+ini_set("display_errors", "on");
+
+
+\App\Application::main();

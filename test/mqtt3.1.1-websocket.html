@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8"/>
+    <title>MQTT over WebSocket Demo</title>
+    <!-- 通过 CDN 引入 mqtt.js -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+</head>
+<body>
+<h3>MQTT over WebSocket (mqtt.js)</h3>
+<button onclick="publish()">发布一条消息</button>
+<pre id="log"></pre>
+
+<script>
+    const log = (msg) => {
+        document.getElementById('log').textContent += msg + '\n';
+    };
+
+    // ws:// 非加密，wss:// 加密（HTTPS 页面必须用 wss）
+    // 注意路径：EMQX 默认是 /mqtt，Mosquitto 可能是 / 、/ws  等，看 broker 配置
+    const url = 'ws://broker.emqx.io:8083/mqtt';
+
+    const options = {
+        clientId: 'browser_' + Math.random().toString(16).substr(2, 10),
+        clean: true,
+        keepalive: 60,
+        reconnectPeriod: 1000,
+        connectTimeout: 30 * 1000,
+        // username: 'emqx_test',
+        // password: 'emqx_test',
+    };
+
+    const client = mqtt.connect(url, options);
+
+    client.on('connect', () => {
+        log('connected');
+        client.subscribe('test/topic', {qos: 0}, (err) => {
+            if (!err) log('subscribed: test/topic');
+        });
+    });
+
+    client.on('message', (topic, payload) => {
+        log(`recv [${topic}]: ${payload.toString()}`);
+    });
+
+    client.on('error', (e) => log('error: ' + e.message));
+    client.on('close', () => log('closed'));
+    client.on('reconnect', () => log('reconnecting...'));
+
+    function publish() {
+        if (client.connected) {
+            client.publish('test/topic', 'hello from browser ' + Date.now(), {qos: 0});
+        } else {
+            log('not connected yet');
+        }
+    }
+</script>
+</body>
+</html>
