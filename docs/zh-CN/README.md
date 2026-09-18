@@ -30,12 +30,12 @@ YewMQ 是一个用 PHP 编写、运行于 Swoole 常驻内存运行时的 MQTT �
 
 ## 二、技术栈
 
-| 维度 | 选型 |
-|---|---|
-| 运行环境 | PHP 7.4+ / 8.x,**必须安装 Swoole 扩展** |
-| 框架 | Yew(PHP 常驻内存协程框架,基于 Swoole) |
+| 维度 | 选型                                          |
+|---|---------------------------------------------|
+| 运行环境 | PHP 8.2+,**必须安装 Swoole 扩展**                   |
+| 框架 | Yew(PHP 常驻内存协程框架,基于 Swoole)                 |
 | 数据库 | MySQL/PostgreSQL(通过 Doctrine ORM / DBAL 持久化) |
-| 协议编解码 | 内置 `Yew\Mqtt` 协议包(支持 3.1.1 与 5.0) |
+| 协议编解码 | 内置 `Yew\Mqtt` 协议包(支持 3.1.1 与 5.0)           |
 
 ---
 
@@ -66,7 +66,23 @@ client_id LIKE 'sensor-%'
 - `drop`:丢弃本次发布(发布者仍按 QoS 正常收到 ACK);
 - `log`:写入日志。
 
-规则通过控制台(`php yew mqtt-rule/add ...`)管理,worker 每 5 秒探测 `updated_at` 变化并热重载。
+规则通过控制台(`php yew mqtt-rule/...`)管理,worker 每 5 秒探测 `updated_at` 变化并热重载。
+
+#### 控制台管理示例
+
+```bash
+php yew mqtt-rule                                       # 列出所有规则
+php yew mqtt-rule/add --name=bridge \
+    --source='$events/message_publish' --filter="topic matches 'sensor/+/temp'" \
+    --actions='[{"type":"republish","args":{"topic":"raw/sensor/temp"}}]' --priority=10
+php yew mqtt-rule/update --rule-id=1 --enabled=0        # 启用 / 禁用
+php yew mqtt-rule/toggle --rule-id=1                    # 切换启用状态
+php yew mqtt-rule/delete --rule-id=1                    # 删除规则
+php yew mqtt-rule/stats                                 # 查看每条规则的命中 / 动作计数
+php yew mqtt-rule/reset-stats                           # 重置计数
+```
+
+> 上述操作在运行时数秒内生效(引擎探测 `mqtt_rule.updated_at` 自动重载),无需重启 broker。
 
 ### 3.4 认证与 ACL
 - `mqtt_user`:用户名 / 密码校验;

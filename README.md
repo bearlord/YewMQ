@@ -32,7 +32,7 @@ YewMQ is an MQTT message broker written in PHP and running on the Swoole residen
 
 | Dimension | Choice |
 |---|---|
-| Runtime | PHP 7.4+ / 8.x, **Swoole extension required** |
+| Runtime | PHP 8.2+, **Swoole extension required** |
 | Framework | Yew (PHP resident-memory coroutine framework, built on Swoole) |
 | Database | MySQL/PostgreSQL (persisted via Doctrine ORM / DBAL) |
 | Protocol codec | Built-in `Yew\Mqtt` packet (supports 3.1.1 and 5.0) |
@@ -66,7 +66,23 @@ Example actions:
 - `drop`: Discard this publish (the publisher still receives a normal ACK per QoS);
 - `log`: Write to the log.
 
-Rules are managed via the console (`php yew mqtt-rule/add ...`); each worker probes `updated_at` for changes and hot-reloads every 5 seconds.
+Rules are managed via the console (`php yew mqtt-rule/...`); each worker probes `updated_at` for changes and hot-reloads every 5 seconds.
+
+#### Console management examples
+
+```bash
+php yew mqtt-rule                                       # list rules
+php yew mqtt-rule/add --name=bridge \
+    --source='$events/message_publish' --filter="topic matches 'sensor/+/temp'" \
+    --actions='[{"type":"republish","args":{"topic":"raw/sensor/temp"}}]' --priority=10
+php yew mqtt-rule/update --rule-id=1 --enabled=0        # enable / disable
+php yew mqtt-rule/toggle --rule-id=1                    # toggle enabled state
+php yew mqtt-rule/delete --rule-id=1                    # delete a rule
+php yew mqtt-rule/stats                                 # show per-rule hit / action counters
+php yew mqtt-rule/reset-stats                           # reset the counters
+```
+
+> All of the above take effect at runtime within a few seconds (the engine probes `mqtt_rule.updated_at` and reloads automatically) — no broker restart required.
 
 ### 3.4 Authentication & ACL
 - `mqtt_user`: Username / password verification;
