@@ -34,7 +34,7 @@ YewMQ is an MQTT message broker written in PHP and running on the Swoole residen
 |---|---|
 | Runtime | PHP 7.4+ / 8.x, **Swoole extension required** |
 | Framework | Yew (PHP resident-memory coroutine framework, built on Swoole) |
-| Database | MySQL (persisted via Doctrine ORM / DBAL) |
+| Database | MySQL/PostgreSQL (persisted via Doctrine ORM / DBAL) |
 | Protocol codec | Built-in `Yew\Mqtt` packet (supports 3.1.1 and 5.0) |
 
 ---
@@ -99,7 +99,7 @@ SUBSCRIBE
 ## 5. Quick Start
 
 ### Requirements
-- PHP `>= 7.4` (8.x recommended) with the **Swoole extension** installed (a normal CLI `php` cannot start the console / broker because it lacks `swoole_version()`).
+- PHP `>= 8.2`  with the **Swoole extension** installed (a normal CLI `php` cannot start the console / broker because it lacks `swoole_version()`).
 - A MySQL database.
 
 ### Install

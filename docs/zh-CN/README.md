@@ -34,7 +34,7 @@ YewMQ 是一个用 PHP 编写、运行于 Swoole 常驻内存运行时的 MQTT �
 |---|---|
 | 运行环境 | PHP 7.4+ / 8.x,**必须安装 Swoole 扩展** |
 | 框架 | Yew(PHP 常驻内存协程框架,基于 Swoole) |
-| 数据库 | MySQL(通过 Doctrine ORM / DBAL 持久化) |
+| 数据库 | MySQL/PostgreSQL(通过 Doctrine ORM / DBAL 持久化) |
 | 协议编解码 | 内置 `Yew\Mqtt` 协议包(支持 3.1.1 与 5.0) |
 
 ---
@@ -99,8 +99,8 @@ SUBSCRIBE
 ## 五、快速开始
 
 ### 环境要求
-- PHP `>= 7.4`(推荐 8.x),并安装 **Swoole 扩展**(普通 CLI `php` 因缺少 `swoole_version()` 无法启动控制台 / broker)。
-- MySQL 数据库。
+- 推荐PHP `>=8.2`,并安装 **Swoole 扩展**(普通 CLI `php` 因缺少 `swoole_version()` 无法启动控制台 / broker)。
+- MySQL/PostgreSQL 数据库。
 
 ### 安装
 ```bash
