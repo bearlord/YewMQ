@@ -1,0 +1,8 @@
+{
+  "require": {
+    "bearlord/yew-framework": "dev-2.0"
+  },
+  "require-dev": {
+    "swoole/ide-helper": "*"
+  }
+}
