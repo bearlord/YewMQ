@@ -123,7 +123,7 @@ php yew migrate/history      # 查看已应用迁移
 
 ### 启动
 ```bash
-./yew start -c -d                 # 启动 broker(Swoole 常驻)
+php server.php start -c -d                 # 启动 broker
 ```
 
 ### 验证

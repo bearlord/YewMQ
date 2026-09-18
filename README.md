@@ -123,7 +123,7 @@ php yew migrate/history      # list applied migrations
 
 ### Start
 ```bash
-./yew start -c -d                 # start the broker (Swoole resident)
+php server.php start -c -d                 # start the broker
 ```
 
 ### Verify
