@@ -34,6 +34,8 @@ class MqttSubscription extends \App\Models\MqttSubscription
                     'topic' => AttributeTypecastBehavior::TYPE_STRING,
                     // Subscription QoS level
                     'qos' => AttributeTypecastBehavior::TYPE_INTEGER,
+                    // No Local (MQTT 5.0) flag: 0 = receive own publications, 1 = do not
+                    'no_local' => AttributeTypecastBehavior::TYPE_INTEGER,
                     // DATETIME(6) timestamps kept as strings
                     'created_at' => AttributeTypecastBehavior::TYPE_STRING,
                     'updated_at' => AttributeTypecastBehavior::TYPE_STRING,

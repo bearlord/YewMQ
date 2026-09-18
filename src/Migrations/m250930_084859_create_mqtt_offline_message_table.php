@@ -29,6 +29,9 @@ class m250930_084859_create_mqtt_offline_message_table extends Migration
             // QoS level (0, 1, 2) of the offline message
             'qos' => $this->smallInteger()->notNull()->defaultValue(0)->comment('Offline message QoS level (0, 1, 2)'),
 
+            // Down-leg packet id assigned on delivery; links this row to its ack record
+            'packet_id' => $this->integer()->null()->comment('Down-leg packet id; links to ack record'),
+
             // Delivery status: 0 = not delivered, 1 = delivered
             'delivered' => $this->smallInteger()->notNull()->defaultValue(0)->comment('Delivery status: 0 = not delivered, 1 = delivered'),
 
@@ -50,6 +53,10 @@ class m250930_084859_create_mqtt_offline_message_table extends Migration
 
         // Create an index for delivered to speed up filtering by delivery status
         $this->createIndex('delivered', '{{%mqtt_offline_message}}', 'delivered');
+
+        // Composite index for (client_id, packet_id) to look up buffered rows by
+        // the down-leg packet id when an ack finalizes them.
+        $this->createIndex('idx_client_packet', '{{%mqtt_offline_message}}', ['client_id', 'packet_id']);
 
         return true;
     }

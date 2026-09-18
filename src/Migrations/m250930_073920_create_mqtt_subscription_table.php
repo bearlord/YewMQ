@@ -26,6 +26,9 @@ class m250930_073920_create_mqtt_subscription_table extends Migration
             // Subscription QoS level (0, 1, 2) requested by the client
             'qos' => $this->smallInteger()->notNull()->defaultValue(0)->comment('Subscription QoS level (0, 1, 2)'),
 
+            // No Local (MQTT 5.0): 1 = subscriber does not receive messages it published itself
+            'no_local' => $this->tinyInteger()->notNull()->defaultValue(0)->comment('No Local (MQTT 5.0): 1 = do not receive own publications'),
+
             // Record creation timestamp
             'created_at' => $this->dateTime(6)->null()->comment('Record creation time'),
 

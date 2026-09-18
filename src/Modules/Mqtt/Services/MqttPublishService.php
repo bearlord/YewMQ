@@ -73,7 +73,15 @@ class MqttPublishService
             'published_time' => (new Carbon())->format('Y-m-d H:i:s.u')
         ]);
 
-        return (int)$upMessage->id;
+        $id = (int)$upMessage->id;
+
+        // Trace: message persisted (up leg).
+        MqttMessageTraceService::trace($id, MqttMessageTraceService::TYPE_STORED, [
+            'direction' => self::DIRECTION_UP,
+            'client_id' => $senderId,
+        ]);
+
+        return $id;
     }
 
     /**
@@ -102,6 +110,12 @@ class MqttPublishService
                 'qos' => $qos,
                 'retain' => $retain,
             ]);
+
+            // Trace: message stored as retained (up leg).
+            MqttMessageTraceService::trace($upMessageId, MqttMessageTraceService::TYPE_RETAINED, [
+                'direction' => self::DIRECTION_UP,
+                'client_id' => $senderId,
+            ]);
         }
 
         $subscribers = $this->getSubscribers($topic);
@@ -120,6 +134,10 @@ class MqttPublishService
             ->setTopic($topic)
             ->setMessage($message);
 
+        // MQTT 5.0 "No Local": resolve once whether the publisher opted out of
+        // receiving its own publications for this topic.
+        $selfNoLocal = null;
+
         foreach ($subscribers as $uid) {
             $_fd = $this->getUidFd($uid);
             if (empty($_fd)) {
@@ -127,6 +145,17 @@ class MqttPublishService
             }
 
             $_clientId = $mqttClientService->getClientIdById($uid);
+
+            // Skip self-delivery (online or buffered offline) when every
+            // matching subscription of this client set No Local.
+            if ($_clientId !== null && $_clientId === $senderId) {
+                if ($selfNoLocal === null) {
+                    $selfNoLocal = (new MqttSubscriptionService())->isNoLocal($senderId, $topic);
+                }
+                if ($selfNoLocal) {
+                    continue;
+                }
+            }
 
             if (!Server::$instance->isEstablished($_fd)) {
                 // Offline subscriber: queue the message for later delivery
@@ -137,6 +166,12 @@ class MqttPublishService
                         'topic' => $topic,
                         'payload' => $message,
                         'qos' => $qos
+                    ]);
+
+                    // Trace: subscriber offline, message buffered (down leg).
+                    MqttMessageTraceService::trace($upMessageId, MqttMessageTraceService::TYPE_OFFLINE_BUFFERED, [
+                        'direction' => self::DIRECTION_DOWN,
+                        'client_id' => $_clientId,
                     ]);
                 }
                 continue;
@@ -169,6 +204,7 @@ class MqttPublishService
 
             // QoS > 0: track the in-flight acknowledgement so PUBACK / PUBREC
             // (and PUBCOMP) can finalize it via the mqtt_message_ack table.
+            $ackId = null;
             if ($qos > 0) {
                 $ack = new MqttMessageAck();
                 $ack->setAttributes([
@@ -182,7 +218,16 @@ class MqttPublishService
                     'published_at' => $now,
                 ], false);
                 $ack->save(false);
+                $ackId = $ack->id;
             }
+
+            // Trace: down-leg delivery to this subscriber.
+            MqttMessageTraceService::trace($upMessageId, MqttMessageTraceService::TYPE_DELIVERED, [
+                'direction' => self::DIRECTION_DOWN,
+                'client_id' => $_clientId,
+                'packet_id' => $packetId ?: null,
+                'mqtt_message_ack_id' => $ackId,
+            ]);
         }
 
         return true;
@@ -325,6 +370,14 @@ class MqttPublishService
                     'published_at'    => $now,
                 ], false);
                 $ack->save(false);
+
+                // Trace: replayed offline message delivered to this subscriber (down leg).
+                MqttMessageTraceService::trace((int)$down->id, MqttMessageTraceService::TYPE_DELIVERED, [
+                    'direction' => self::DIRECTION_DOWN,
+                    'client_id' => $clientId,
+                    'packet_id' => $packetId ?: null,
+                    'mqtt_message_ack_id' => $ack->id,
+                ]);
             }
 
             // QoS 0 has no handshake: drop the buffered row immediately.
@@ -495,6 +548,18 @@ class MqttPublishService
         ], false);
         $ack->save(false);
 
+        // Trace the terminal down-leg acknowledgement (PUBACK for QoS 1, PUBCOMP for QoS 2).
+        MqttMessageTraceService::trace(
+            (int)$ack->mqtt_message_id,
+            $ack->qos == 1 ? MqttMessageTraceService::TYPE_PUBACK : MqttMessageTraceService::TYPE_PUBCOMP,
+            [
+                'direction' => self::DIRECTION_DOWN,
+                'client_id' => $receiverId,
+                'packet_id' => $packetId,
+                'mqtt_message_ack_id' => $ack->id,
+            ]
+        );
+
         // If this ack finalizes a replayed offline message, clear the buffered row.
         // Harmless for live deliveries (no offline row carries this packet id).
         MqttOfflineMessage::deleteAll([
@@ -532,6 +597,14 @@ class MqttPublishService
             'pubrec_at' => (new Carbon())->format('Y-m-d H:i:s.u'),
         ], false);
         $ack->save(false);
+
+        // Trace: subscriber acknowledged the QoS 2 PUBLISH with PUBREC (down leg).
+        MqttMessageTraceService::trace((int)$ack->mqtt_message_id, MqttMessageTraceService::TYPE_PUBREC, [
+            'direction' => self::DIRECTION_DOWN,
+            'client_id' => $receiverId,
+            'packet_id' => $packetId,
+            'mqtt_message_ack_id' => $ack->id,
+        ]);
     }
 
     /**
@@ -607,35 +680,46 @@ class MqttPublishService
             $dropped = false;
         }
 
-        // A `drop` rule skips persistence/forwarding, but the publisher is still
-        // acknowledged per QoS — so the acknowledgement below is identical for both
-        // paths, and only the publish step is conditional on !$dropped.
-        if (!$dropped) {
-            if ($qos == 2) {
-                // QoS 2 (exactly-once): persist now, but hold the message until
-                // PUBREL — deliver only after the publisher commits, so a message
-                // is never forwarded before its handshake completes.
-                $upMessageId = $this->persistInboundPublish($protocolLevel, $clientId, $topic, $message, $qos, $retain);
-                $this->stashQos2Inbound($fd, $messageId, [
-                    'up_message_id'  => $upMessageId,
-                    'protocol_level' => $protocolLevel,
-                    'sender_id'      => $clientId,
-                    'topic'          => $topic,
-                    'message'        => $message,
-                    'qos'            => $qos,
-                    'retain'         => $retain,
-                ]);
-            } else {
-                // QoS 0/1: persist + forward immediately.
-                $this->publishProcess($protocolLevel, $clientId, $topic, $message, $qos, $retain);
-            }
-        }
+        // Dispatch by QoS. Each case owns this level's full lifecycle: it
+        // acknowledges the publisher in the correct order and — unless a rule
+        // dropped the message — persists + forwards. Dropped messages are still
+        // acknowledged so the client never hangs waiting for the handshake.
+        switch ($qos) {
+            case 2:
+                // Exactly-once: persist now but hold delivery until PUBREL, so a
+                // message is never forwarded before the publisher's handshake
+                // commits. PUBREC is sent after persistence; delivery is deferred
+                // to PUBREL, so its order relative to forwarding is moot.
+                if (!$dropped) {
+                    $upMessageId = $this->persistInboundPublish($protocolLevel, $clientId, $topic, $message, $qos, $retain);
+                    $this->stashQos2Inbound($fd, $messageId, [
+                        'up_message_id'  => $upMessageId,
+                        'protocol_level' => $protocolLevel,
+                        'sender_id'      => $clientId,
+                        'topic'          => $topic,
+                        'message'        => $message,
+                        'qos'            => $qos,
+                        'retain'         => $retain,
+                    ]);
+                }
+                $this->pubRecProcess($fd, $protocolLevel, $messageId);
+                break;
 
-        // Acknowledge the publisher according to the QoS level.
-        if ($qos == 1) {
-            $this->pubAckProcess($fd, $protocolLevel, $messageId);
-        } elseif ($qos == 2) {
-            $this->pubRecProcess($fd, $protocolLevel, $messageId);
+            case 1:
+                // At-least-once: acknowledge BEFORE forwarding, so the client
+                // shows "sent" ahead of the echoed PUBLISH it receives as a
+                // subscriber of this very topic.
+                $this->pubAckProcess($fd, $protocolLevel, $messageId);
+                if (!$dropped) {
+                    $this->publishProcess($protocolLevel, $clientId, $topic, $message, $qos, $retain);
+                }
+                break;
+
+            default: // QoS 0 — fire-and-forget
+                if (!$dropped) {
+                    $this->publishProcess($protocolLevel, $clientId, $topic, $message, $qos, $retain);
+                }
+                break;
         }
     }
 

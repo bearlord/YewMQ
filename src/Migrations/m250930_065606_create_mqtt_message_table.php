@@ -24,7 +24,7 @@ class m250930_065606_create_mqtt_message_table extends Migration
 
             'topic' => $this->string(240)->notNull()->comment('topic'),
 
-            'payload' => $this->text()->notNull()->comment('payload'),
+            'payload' => $this->binary()->notNull()->comment('payload'),
 
             'qos' => $this->smallInteger()->notNull()->defaultValue(0)->comment('qos'),
 

@@ -11,6 +11,7 @@ use Yew\Yew;
  * @property string $client_id MQTT client identifier
  * @property string $topic Subscribed topic filter, supports + and # wildcards
  * @property int $qos Subscription QoS level (0, 1, 2)
+ * @property int $no_local No Local (MQTT 5.0): 1 = do not receive own publications
  * @property string|null $created_at Record creation time
  * @property string|null $updated_at Record update time
  */
@@ -31,7 +32,7 @@ class MqttSubscription extends \Yew\Framework\Db\ActiveRecord
     {
         return [
             [['client_id', 'topic'], 'required'],
-            [['qos'], 'integer'],
+            [['qos', 'no_local'], 'integer'],
             [['created_at', 'updated_at'], 'safe'],
             [['client_id'], 'string', 'max' => 128],
             [['topic'], 'string', 'max' => 240],
@@ -48,6 +49,7 @@ class MqttSubscription extends \Yew\Framework\Db\ActiveRecord
             'client_id' => 'Client ID',
             'topic' => 'Topic',
             'qos' => 'Qos',
+            'no_local' => 'No Local',
             'created_at' => 'Created At',
             'updated_at' => 'Updated At',
         ];

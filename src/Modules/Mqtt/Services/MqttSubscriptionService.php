@@ -134,6 +134,9 @@ class MqttSubscriptionService
                 'client_id' => $clientId,
                 'topic' => $topic,
                 'qos' => $options['qos'] ?? 0,
+                // MQTT 5.0 No Local: persisted so deliverToSubscribers() can
+                // later skip self-delivery. Absent for MQTT 3.1.1 (defaults 0).
+                'no_local' => !empty($options['no_local']) ? 1 : 0,
             ]);
             $this->addSubscription($topic, (string)$uid);
         }
@@ -295,5 +298,77 @@ class MqttSubscriptionService
         }
 
         $this->unsubscribeProcess($fd, $protocolLevel, $clientId, $messageId, $topics);
+    }
+
+    /**
+     * Determine whether a client has opted out of receiving its own messages
+     * on a given topic (MQTT 5.0 "No Local").
+     *
+     * The client may hold several overlapping subscriptions that match $topic.
+     * Per spec each subscription carries its own No Local flag, so we skip
+     * self-delivery only when at least one filter matches AND none of the
+     * matching filters explicitly opted into receiving own publications.
+     *
+     * @param string $clientId Publisher / subscriber client identifier.
+     * @param string $topic Concrete topic the message was published to.
+     * @return bool True when every matching subscription set No Local.
+     */
+    public function isNoLocal(string $clientId, string $topic): bool
+    {
+        $subs = MqttSubscription::find()
+            ->where(['client_id' => $clientId])
+            ->all();
+        if (empty($subs)) {
+            return false;
+        }
+
+        $matched = false;
+        $allowSelf = false; // a matched subscription wants its own messages
+        foreach ($subs as $sub) {
+            if ($this->topicFilterMatches($sub->topic, $topic)) {
+                $matched = true;
+                if (empty($sub->no_local)) {
+                    $allowSelf = true;
+                }
+            }
+        }
+
+        return $matched && !$allowSelf;
+    }
+
+    /**
+     * Match a topic filter (may contain '+' / '#' wildcards) against a
+     * concrete topic name, per MQTT 4.7.1.
+     *
+     * @param string $filter Topic filter (subscription expression).
+     * @param string $topic  Concrete topic name (publish target).
+     * @return bool True when $topic matches $filter.
+     */
+    private function topicFilterMatches(string $filter, string $topic): bool
+    {
+        $f = explode('/', $filter);
+        $t = explode('/', $topic);
+        $fn = count($f);
+        $tn = count($t);
+
+        for ($i = 0; $i < $fn; $i++) {
+            $level = $f[$i];
+            if ($level === '#') {
+                // Multi-level wildcard matches the remaining levels (incl. none).
+                return true;
+            }
+            if ($i >= $tn) {
+                return false;
+            }
+            if ($level === '+') {
+                // Single-level wildcard matches exactly one level.
+                continue;
+            }
+            if ($level !== $t[$i]) {
+                return false;
+            }
+        }
+
+        return $fn === $tn;
     }
 }
