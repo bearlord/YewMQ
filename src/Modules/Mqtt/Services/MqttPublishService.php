@@ -14,17 +14,15 @@ use Yew\Mqtt\Message\PubRec;
 use Yew\Mqtt\Message\PubRel;
 use Yew\Mqtt\Tools\ProtocolLevel;
 use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
+use Yew\Plugins\Mqtt\Topic\GetMqttTopic;
 use Yew\Plugins\Pack\GetBoostSend;
-use Yew\Plugins\Topic\GetTopic;
-use Yew\Plugins\Uid\GetUid;
 
 class MqttPublishService
 {
-    use GetUid;
-    use GetTopic;
     use GetBoostSend;
     use GetLogger;
     use GetMqttConnection;
+    use GetMqttTopic;
 
     public const DIRECTION_UP = 1;
 
@@ -124,7 +122,6 @@ class MqttPublishService
         }
 
         $mqttMessageService = new MqttMessageService();
-        $mqttClientService = new MqttClientService();
         $mqttOfflineMessageService = new MqttOfflineMessageService();
         $now = (new Carbon())->format('Y-m-d H:i:s.u');
 
@@ -138,17 +135,15 @@ class MqttPublishService
         // receiving its own publications for this topic.
         $selfNoLocal = null;
 
-        foreach ($subscribers as $uid) {
-            $_fd = $this->getUidFd($uid);
+        foreach ($subscribers as $subClientId) {
+            $_fd = $this->getClientSession($subClientId, 'fd');
             if (empty($_fd)) {
                 continue;
             }
 
-            $_clientId = $mqttClientService->getClientIdById($uid);
-
             // Skip self-delivery (online or buffered offline) when every
             // matching subscription of this client set No Local.
-            if ($_clientId !== null && $_clientId === $senderId) {
+            if ($subClientId === $senderId) {
                 if ($selfNoLocal === null) {
                     $selfNoLocal = (new MqttSubscriptionService())->isNoLocal($senderId, $topic);
                 }
@@ -162,7 +157,7 @@ class MqttPublishService
                 // (QoS > 0 only; QoS 0 is fire-and-forget).
                 if ($qos > 0) {
                     $mqttOfflineMessageService->saveOfflineMessage([
-                        'client_id' => $_clientId,
+                        'client_id' => $subClientId,
                         'topic' => $topic,
                         'payload' => $message,
                         'qos' => $qos
@@ -171,7 +166,7 @@ class MqttPublishService
                     // Trace: subscriber offline, message buffered (down leg).
                     MqttMessageTraceService::trace($upMessageId, MqttMessageTraceService::TYPE_OFFLINE_BUFFERED, [
                         'direction' => self::DIRECTION_DOWN,
-                        'client_id' => $_clientId,
+                        'client_id' => $subClientId,
                     ]);
                 }
                 continue;
@@ -194,7 +189,7 @@ class MqttPublishService
             $mqttMessageService->saveMessage([
                 'direction' => self::DIRECTION_DOWN,
                 'sender_id' => $senderId,
-                'receiver_id' => $_clientId,
+                'receiver_id' => $subClientId,
                 'topic' => $topic,
                 'payload' => $message,
                 'qos' => $qos,
@@ -210,7 +205,7 @@ class MqttPublishService
                 $ack->setAttributes([
                     'mqtt_message_id' => $upMessageId,
                     'direction' => self::DIRECTION_DOWN,
-                    'receiver_id' => $_clientId,
+                    'receiver_id' => $subClientId,
                     'packet_id' => $packetId,
                     'qos' => $qos,
                     'stage' => 1,
@@ -224,7 +219,7 @@ class MqttPublishService
             // Trace: down-leg delivery to this subscriber.
             MqttMessageTraceService::trace($upMessageId, MqttMessageTraceService::TYPE_DELIVERED, [
                 'direction' => self::DIRECTION_DOWN,
-                'client_id' => $_clientId,
+                'client_id' => $subClientId,
                 'packet_id' => $packetId ?: null,
                 'mqtt_message_ack_id' => $ackId,
             ]);

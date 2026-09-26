@@ -11,15 +11,15 @@ use Yew\Mqtt\Message\UnSubAck;
 use Yew\Mqtt\Tools\ProtocolLevel;
 use Yew\Mqtt\Tools\TopicValidator;
 use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
+use Yew\Plugins\Mqtt\Topic\GetMqttTopic;
 use Yew\Plugins\Pack\GetBoostSend;
-use Yew\Plugins\Topic\GetTopic;
 
 class MqttSubscriptionService
 {
     use GetBoostSend;
     use GetLogger;
     use GetMqttConnection;
-    use GetTopic;
+    use GetMqttTopic;
 
     /**
      * @param array $data
@@ -105,7 +105,6 @@ class MqttSubscriptionService
         // Resolve subscriber context from the fd session in a single IPC round-trip
         // (uid + rule-engine metadata), instead of one IPC call per field.
         $sess = $this->getFdSessionMulti($fd);
-        $uid = $sess['uid'] ?? null;
 
         // 1. Pick the reason code used for an invalid topic, per protocol level.
         $invalidReasonCode = match ($protocolLevel) {
@@ -138,7 +137,7 @@ class MqttSubscriptionService
                 // later skip self-delivery. Absent for MQTT 3.1.1 (defaults 0).
                 'no_local' => !empty($options['no_local']) ? 1 : 0,
             ]);
-            $this->addSubscription($topic, (string)$uid);
+            $this->addSubscription($topic, $clientId);
         }
 
         // 3b. Replay any messages buffered while this client was offline and
@@ -189,11 +188,10 @@ class MqttSubscriptionService
     {
         // Resolve subscriber context from the fd session in a single IPC round-trip.
         $sess = $this->getFdSessionMulti($fd);
-        $uid = $sess['uid'] ?? null;
 
         // Remove each topic from the routing table and delete the persisted record.
         foreach ($topics as $topic) {
-            $this->removeSubscription($topic, (string)$uid);
+            $this->removeSubscription($topic, $clientId);
             $this->deleteSubscription($clientId, $topic);
         }
 

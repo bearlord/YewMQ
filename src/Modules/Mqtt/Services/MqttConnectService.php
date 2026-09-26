@@ -8,14 +8,12 @@ use Yew\Mqtt\Message\ConnAck;
 use Yew\Mqtt\Tools\ProtocolLevel;
 use Yew\Plugins\Mqtt\Connection\GetMqttConnection;
 use Yew\Plugins\Pack\GetBoostSend;
-use Yew\Plugins\Uid\GetUid;
 
 class MqttConnectService
 {
     use GetBoostSend;
     use GetLogger;
     use GetMqttConnection;
-    use GetUid;
 
     /**
      * Entry point for an inbound CONNECT. Parses the client payload (fd,
@@ -124,8 +122,8 @@ class MqttConnectService
             'session_start' => $sessionStart,
         ]);
 
-        // Bind the connection fd to the uid for Topic/Uid plugin routing.
-        $this->bindUid($fd, $clientPKId);
+        // fd <-> clientId routing now lives in the mqtt-connection process
+        // (clientSession), so no separate Uid binding is needed.
 
         // MQTT keepalive: arm the idle watchdog (0/empty disables enforcement).
         if ($keepAlive !== null) {

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Commands;
+namespace App\Console;
 
 use App\Models\Extension\MqttRule;
 use App\Modules\Mqtt\Services\RuleEngine;

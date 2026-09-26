@@ -8,7 +8,6 @@ use Yew\Framework\Controller;
 use Yew\Plugins\Pack\GetBoostSend;
 use Yew\Plugins\Route\Annotation\RequestMapping;
 use Yew\Plugins\Route\Annotation\WsController;
-use Yew\Plugins\Uid\GetUid;
 
 /**
  * @WsController("/")
@@ -19,7 +18,6 @@ class WebsocketController extends Controller
 
     use GetBoostSend;
     use GetLogger;
-    use GetUid;
 
     /**
      * @RequestMapping("onWsOpen")
